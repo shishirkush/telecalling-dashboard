@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telecalling — Supervisor Dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:            #f9f9f7;
+    --surface:         #fcfcfb;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --grid:            #e1e0d9;
+    --baseline:        #c3c2b7;
+    --border:          rgba(11,11,11,0.10);
+    --accent:          #2a78d6;
+
+    /* Categorical slots 1-5 assigned in display order, most-actionable
+       outcome first. Validated as a set: worst adjacent CVD dE 9.1,
+       normal-vision dE 19.6 on this light surface. */
+    --s-lead:          #2a78d6;   /* slot 1 */
+    --s-call-later:    #eb6834;   /* slot 2 */
+    --s-not-interested:#1baf7a;   /* slot 3 */
+    --s-wrong-number:  #eda100;   /* slot 4 */
+    --s-switched-off:  #e87ba4;   /* slot 5 */
+
+    --good:            #0ca30c;
+    --critical:        #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface:        #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --accent:         #3987e5;
+
+      --s-lead:          #3987e5;
+      --s-call-later:    #d95926;
+      --s-not-interested:#199e70;
+      --s-wrong-number:  #c98500;
+      --s-switched-off:  #d55181;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .card h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-secondary); margin: 0 0 14px; font-weight: 600;
+  }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .tile .value { font-size: 30px; font-weight: 600; line-height: 1.1; }
+  .tile .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  /* ---- bar chart ---- */
+  .bar-row { display: grid; grid-template-columns: 132px 1fr 74px; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .bar-label { font-size: 13px; color: var(--text-secondary); }
+  .bar-track { background: var(--grid); border-radius: 4px; height: 22px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; transition: width .3s ease; }
+  .bar-value { font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+
+  /* ---- tables ---- */
+  .table-wrap { overflow-x: auto; }
+  /* Long logs scroll inside the card rather than stretching the page. */
+  .scroll-y { max-height: 520px; overflow-y: auto; }
+  .scroll-y thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface); box-shadow: inset 0 -1px 0 var(--grid);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--grid); color: var(--text-primary);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  /* ---- controls ---- */
+  button, select, input {
+    font: inherit; color: var(--text-primary); background: var(--surface);
+    border: 1px solid var(--baseline); border-radius: 8px; padding: 8px 12px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 500; }
+  button.primary:disabled { opacity: .55; cursor: default; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  .filters button { border-radius: 999px; padding: 6px 14px; font-size: 13px; }
+  .filters button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+
+  .muted { color: var(--text-muted); }
+  .err { color: var(--critical); }
+  .ok  { color: var(--good); }
+
+  /* ---- login / setup ---- */
+  .center { max-width: 400px; margin: 8vh auto; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+  .field input { width: 100%; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- =============== SETUP (first run) =============== -->
+<section id="setup" class="center hidden">
+  <div class="card">
+    <h2>Connect to Supabase</h2>
+    <p class="muted" style="margin-top:0">
+      One-time. Paste your project URL and the <strong>anon</strong> key
+      (Supabase → Project Settings → API). These are stored only in this
+      browser. Never paste the <em>service_role</em> key here.
+    </p>
+    <div class="field">
+      <label for="cfgUrl">Project URL</label>
+      <input id="cfgUrl" placeholder="https://xxxxx.supabase.co" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="cfgKey">Anon public key</label>
+      <input id="cfgKey" placeholder="eyJhbGci..." autocomplete="off">
+    </div>
+    <button class="primary" id="cfgSave">Save</button>
+    <p id="cfgErr" class="err"></p>
+  </div>
+</section>
+
+<!-- =============== LOGIN =============== -->
+<section id="login" class="center hidden">
+  <div class="card">
+    <h2>Supervisor sign in</h2>
+    <div class="field">
+      <label for="loginId">Login ID</label>
+      <input id="loginId" type="text" autocomplete="username"
+             autocapitalize="none" spellcheck="false" placeholder="e.g. rahul.k">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password">
+    </div>
+    <button class="primary" id="signIn">Sign in</button>
+    <button id="resetCfg" style="margin-left:8px">Change project</button>
+    <p id="loginErr" class="err"></p>
+  </div>
+</section>
+
+<!-- =============== DASHBOARD =============== -->
+<div id="app" class="hidden">
+  <header>
+    <h1>Telecalling — Supervisor</h1>
+    <span class="spacer"></span>
+    <span id="whoami" class="muted"></span>
+    <button id="refresh">Refresh</button>
+    <button id="signOut">Sign out</button>
+  </header>
+
+  <main>
+    <div class="filters" role="group" aria-label="Date range">
+      <button data-days="0"  aria-pressed="true">Today</button>
+      <button data-days="7"  aria-pressed="false">Last 7 days</button>
+      <button data-days="30" aria-pressed="false">Last 30 days</button>
+      <button data-days="-1" aria-pressed="false">All time</button>
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <h2>Call outcomes</h2>
+      <div id="chart"></div>
+      <p class="muted" style="margin:12px 0 0; font-size:12px">
+        Every bar carries its own label and count, so the breakdown reads without
+        relying on colour.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Agent performance</h2>
+      <div class="table-wrap">
+        <table id="agentTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th class="num">Calls</th>
+            <th class="num">Leads</th>
+            <th class="num">Conv. %</th>
+            <th class="num">Call later</th>
+            <th class="num">Not int.</th>
+            <th class="num">Wrong no.</th>
+            <th class="num">Switched off</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Callbacks due</h2>
+      <div class="table-wrap scroll-y">
+        <table id="callbackTable">
+          <thead><tr>
+            <th>Due</th><th>Name</th><th>Mobile</th><th>Company</th><th>Agent</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Recent calls</h2>
+      <div class="table-wrap scroll-y">
+        <table id="recentTable">
+          <thead><tr>
+            <th>When</th><th>Customer</th><th>Mobile</th><th>Outcome</th><th>Agent</th><th>Remarks</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Import leads (CSV)</h2>
+      <p class="muted" style="margin-top:0">
+        Expected columns: <code>Name, PAN, Mobile No, Email, DOB, Annual Income
+        Range, Company, ICI Cr Lmt, Address</code>. DOB must be
+        <code>YYYY-MM-DD</code>; Address is capped at 2000 characters and is
+        truncated past that. Give the batch a name so you can report on it later.
+      </p>
+      <div class="field" style="max-width:340px">
+        <label for="batchName">Batch name</label>
+        <input id="batchName" placeholder="ICICI_PREAPPROVED_SEP2026">
+      </div>
+      <input type="file" id="csvFile" accept=".csv,text/csv">
+      <button class="primary" id="csvUpload" disabled>Upload</button>
+      <p id="csvStatus" class="muted"></p>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // -----------------------------------------------------------------
+  // Config
+  // -----------------------------------------------------------------
+  const CFG_KEY = "telecall_dashboard_cfg";
+  let sb = null;
+  let rangeDays = 0;           // 0 = today, -1 = all time
+
+  const STATUS_META = [
+    { wire: "LEAD",           label: "Lead",           varName: "--s-lead" },
+    { wire: "CALL_LATER",     label: "Call Later",     varName: "--s-call-later" },
+    { wire: "NOT_INTERESTED", label: "Not Interested", varName: "--s-not-interested" },
+    { wire: "WRONG_NUMBER",   label: "Wrong No.",      varName: "--s-wrong-number" },
+    { wire: "SWITCHED_OFF",   label: "Switched Off",   varName: "--s-switched-off" }
+  ];
+  const metaFor = w => STATUS_META.find(s => s.wire === w) ||
+                       { label: w || "—", varName: "--text-muted" };
+
+  // Supervisors sign in with the same login ID the agents use, not an email.
+  // GoTrue is email/password underneath, so the ID is expanded to
+  // "<login_id>@LOGIN_DOMAIN" exactly as SupabaseClient.loginIdToEmail() does
+  // on Android. MUST match LOGIN_DOMAIN in android/app/build.gradle.kts —
+  // if the two drift apart, sign-in fails on one platform and not the other.
+  const LOGIN_DOMAIN = "telecall.local";
+  const loginIdToEmail = id => {
+    const v = String(id || "").trim().toLowerCase();
+    // Tolerate someone typing the full address out of habit.
+    return v.includes("@") ? v : `${v}@${LOGIN_DOMAIN}`;
+  };
+
+  const $  = id => document.getElementById(id);
+  const show = (el, on) => el.classList.toggle("hidden", !on);
+  const esc = s => String(s ?? "").replace(/[&<>"']/g,
+    c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+  function loadCfg() {
+    try { return JSON.parse(localStorage.getItem(CFG_KEY) || "null"); }
+    catch (e) { return null; }
+  }
+  function saveCfg(c) {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  // -----------------------------------------------------------------
+  // Boot
+  // -----------------------------------------------------------------
+  async function boot() {
+    const cfg = loadCfg();
+    if (!cfg || !cfg.url || !cfg.key) { show($("setup"), true); return; }
+
+    sb = window.supabase.createClient(cfg.url, cfg.key);
+    const { data } = await sb.auth.getSession();
+    if (data && data.session) { await enterApp(); }
+    else { show($("login"), true); }
+  }
+
+  $("cfgSave").onclick = () => {
+    const url = $("cfgUrl").value.trim().replace(/\/+$/, "");
+    const key = $("cfgKey").value.trim();
+    if (!/^https:\/\/.+\.supabase\.co$/.test(url)) {
+      $("cfgErr").textContent = "That does not look like a Supabase project URL.";
+      return;
+    }
+    if (key.length < 30) { $("cfgErr").textContent = "That anon key looks too short."; return; }
+    saveCfg({ url, key });
+    location.reload();
+  };
+
+  $("resetCfg").onclick = () => { localStorage.removeItem(CFG_KEY); location.reload(); };
+
+  $("signIn").onclick = async () => {
+    $("loginErr").textContent = "";
+    const id = $("loginId").value.trim();
+    if (!id || !$("password").value) {
+      $("loginErr").textContent = "Enter your login ID and password."; return;
+    }
+    const { error } = await sb.auth.signInWithPassword({
+      email: loginIdToEmail(id),
+      password: $("password").value
+    });
+    if (error) {
+      // Don't echo GoTrue's "Invalid login credentials" wording about an
+      // email the supervisor never typed.
+      $("loginErr").textContent =
+        /invalid login/i.test(error.message)
+          ? "Incorrect login ID or password."
+          : error.message;
+      return;
+    }
+    await enterApp();
+  };
+
+  ["loginId", "password"].forEach(f =>
+    $(f).addEventListener("keydown", e => { if (e.key === "Enter") $("signIn").click(); }));
+
+  $("signOut").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+  $("refresh").onclick = () => load();
+
+  document.querySelectorAll(".filters button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll(".filters button")
+        .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      rangeDays = Number(b.dataset.days);
+      load();
+    };
+  });
+
+  async function enterApp() {
+    const { data: u } = await sb.auth.getUser();
+    const uid = u && u.user ? u.user.id : null;
+    if (!uid) { show($("login"), true); return; }
+
+    const { data: profile, error } = await sb
+      .from("profiles").select("full_name, role").eq("id", uid).single();
+
+    if (error || !profile) {
+      $("loginErr").textContent = "No profile found for this account.";
+      show($("login"), true);
+      return;
+    }
+    if (profile.role !== "supervisor") {
+      // The database would block the queries anyway; failing here gives a
+      // comprehensible message instead of a screen of empty tables.
+      $("loginErr").textContent =
+        "This account is an agent, not a supervisor. Ask an admin to change your role.";
+      await sb.auth.signOut();
+      show($("login"), true);
+      return;
+    }
+
+    $("whoami").textContent = profile.full_name || "";
+    show($("login"), false);
+    show($("setup"), false);
+    show($("app"), true);
+    load();
+  }
+
+  // -----------------------------------------------------------------
+  // Data
+  // -----------------------------------------------------------------
+  function sinceIso() {
+    if (rangeDays < 0) return null;
+    const d = new Date();
+    if (rangeDays === 0) d.setHours(0, 0, 0, 0);
+    else d.setDate(d.getDate() - rangeDays);
+    return d.toISOString();
+  }
+
+  async function load() {
+    try {
+      const since = sinceIso();
+
+      let q = sb.from("call_dispositions")
+        .select("id, status, lead_quality, remarks, called_at, agent_id, leads(name, mobile, company)")
+        .order("called_at", { ascending: false })
+        .limit(2000);
+      if (since) q = q.gte("called_at", since);
+
+      const [dispRes, profRes, cbRes] = await Promise.all([
+        q,
+        sb.from("profiles").select("id, full_name, role"),
+        sb.from("leads")
+          .select("id, name, mobile, company, callback_at, assigned_to")
+          .not("callback_at", "is", null)
+          .eq("is_closed", false)
+          .order("callback_at", { ascending: true })
+          .limit(200)
+      ]);
+
+      if (dispRes.error) throw dispRes.error;
+
+      const disp  = dispRes.data || [];
+      const profs = profRes.data || [];
+      const names = Object.fromEntries(profs.map(p => [p.id, p.full_name || "—"]));
+
+      renderTiles(disp, cbRes.data || []);
+      renderChart(disp);
+      renderAgents(disp, profs, names);
+      renderCallbacks(cbRes.data || [], names);
+      renderRecent(disp, names);
+    } catch (e) {
+      alert("Could not load data: " + (e.message || e));
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------
+  function renderTiles(disp, callbacks) {
+    const total = disp.length;
+    const leads = disp.filter(d => d.status === "LEAD").length;
+    const conv  = total ? (100 * leads / total).toFixed(1) : "0.0";
+    const now   = Date.now();
+    const overdue = callbacks.filter(c => new Date(c.callback_at).getTime() < now).length;
+
+    $("tiles").innerHTML = `
+      <div class="tile"><div class="label">Calls made</div>
+        <div class="value">${total}</div>
+        <div class="sub">${rangeLabel()}</div></div>
+      <div class="tile"><div class="label">Leads generated</div>
+        <div class="value">${leads}</div>
+        <div class="sub">${disp.filter(d => d.lead_quality === "HOT").length} hot</div></div>
+      <div class="tile"><div class="label">Conversion</div>
+        <div class="value">${conv}%</div>
+        <div class="sub">leads ÷ calls</div></div>
+      <div class="tile"><div class="label">Callbacks pending</div>
+        <div class="value">${callbacks.length}</div>
+        <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>`;
+  }
+
+  function rangeLabel() {
+    if (rangeDays < 0) return "all time";
+    if (rangeDays === 0) return "today";
+    return "last " + rangeDays + " days";
+  }
+
+  function renderChart(disp) {
+    const counts = {};
+    STATUS_META.forEach(s => counts[s.wire] = 0);
+    disp.forEach(d => { if (d.status in counts) counts[d.status]++; });
+    const max = Math.max(1, ...Object.values(counts));
+    const total = disp.length || 1;
+
+    $("chart").innerHTML = STATUS_META.map(s => {
+      const n = counts[s.wire];
+      const pct = (100 * n / total).toFixed(0);
+      return `<div class="bar-row" title="${esc(s.label)}: ${n} of ${disp.length} calls (${pct}%)">
+        <div class="bar-label">${esc(s.label)}</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${(100 * n / max).toFixed(1)}%;
+               background:var(${s.varName})"></div>
+        </div>
+        <div class="bar-value">${n} · ${pct}%</div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderAgents(disp, profs, names) {
+    const rows = {};
+    profs.filter(p => p.role === "agent").forEach(p => {
+      rows[p.id] = { name: p.full_name || "—", total: 0,
+                     LEAD: 0, CALL_LATER: 0, NOT_INTERESTED: 0,
+                     WRONG_NUMBER: 0, SWITCHED_OFF: 0 };
+    });
+    disp.forEach(d => {
+      const r = rows[d.agent_id];
+      if (!r) return;
+      r.total++;
+      if (d.status in r) r[d.status]++;
+    });
+
+    const list = Object.values(rows).sort((a, b) => b.LEAD - a.LEAD || b.total - a.total);
+    const tbody = $("agentTable").querySelector("tbody");
+    tbody.innerHTML = list.length ? list.map(r => `
+      <tr>
+        <td>${esc(r.name)}</td>
+        <td class="num">${r.total}</td>
+        <td class="num">${r.LEAD}</td>
+        <td class="num">${r.total ? (100 * r.LEAD / r.total).toFixed(1) : "0.0"}</td>
+        <td class="num">${r.CALL_LATER}</td>
+        <td class="num">${r.NOT_INTERESTED}</td>
+        <td class="num">${r.WRONG_NUMBER}</td>
+        <td class="num">${r.SWITCHED_OFF}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="8" class="muted">No agents yet.</td></tr>`;
+  }
+
+  function renderCallbacks(rows, names) {
+    const now = Date.now();
+    const tbody = $("callbackTable").querySelector("tbody");
+    tbody.innerHTML = rows.length ? rows.map(r => {
+      const due = new Date(r.callback_at);
+      const late = due.getTime() < now;
+      return `<tr>
+        <td class="${late ? "err" : ""}">${esc(fmtDT(due))}${late ? " · overdue" : ""}</td>
+        <td>${esc(r.name)}</td>
+        <td>${esc(r.mobile)}</td>
+        <td>${esc(r.company || "—")}</td>
+        <td>${esc(names[r.assigned_to] || "—")}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="5" class="muted">Nothing scheduled.</td></tr>`;
+  }
+
+  function renderRecent(disp, names) {
+    const tbody = $("recentTable").querySelector("tbody");
+    tbody.innerHTML = disp.length ? disp.slice(0, 100).map(d => {
+      const m = metaFor(d.status);
+      const lead = d.leads || {};
+      const quality = d.lead_quality ? ` (${d.lead_quality.toLowerCase()})` : "";
+      return `<tr>
+        <td>${esc(fmtDT(new Date(d.called_at)))}</td>
+        <td>${esc(lead.name || "—")}</td>
+        <td>${esc(lead.mobile || "—")}</td>
+        <td><span class="chip"><span class="dot" style="background:var(${m.varName})"></span>${esc(m.label + quality)}</span></td>
+        <td>${esc(names[d.agent_id] || "—")}</td>
+        <td style="white-space:normal;max-width:280px">${esc(d.remarks || "")}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" class="muted">No calls in this period.</td></tr>`;
+  }
+
+  function fmtDT(d) {
+    return d.toLocaleString(undefined,
+      { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  // -----------------------------------------------------------------
+  // CSV import
+  // -----------------------------------------------------------------
+  $("csvFile").onchange = () => { $("csvUpload").disabled = !$("csvFile").files.length; };
+
+  $("csvUpload").onclick = async () => {
+    const file = $("csvFile").files[0];
+    const batch = $("batchName").value.trim();
+    if (!file) return;
+    if (!batch) { $("csvStatus").innerHTML = '<span class="err">Give the batch a name first.</span>'; return; }
+
+    $("csvUpload").disabled = true;
+    $("csvStatus").textContent = "Reading file…";
+
+    try {
+      const rows = parseCsv(await file.text());
+      if (!rows.length) throw new Error("No data rows found.");
+
+      const mapped = rows.map(r => ({
+        name:                pick(r, ["name", "customer name", "full name"]),
+        pan:                 upper(pick(r, ["pan", "pan no", "pan number"])),
+        mobile:              digits(pick(r, ["mobile no", "mobile", "mobile number", "phone"])),
+        email:               pick(r, ["email", "email id"]),
+        dob:                 isoDate(pick(r, ["dob", "date of birth"])),
+        annual_income_range: pick(r, ["annual income range", "income range", "annual income"]),
+        company:             pick(r, ["company", "pp code company name", "company name", "employer"]),
+        ici_cr_lmt:          num(pick(r, ["ici cr lmt", "ici credit limit", "credit limit"])),
+        // Trimmed to the same 2000 chars the CHECK constraint allows, so an
+        // over-long cell truncates instead of failing the whole chunk.
+        address:             (pick(r, ["address", "residential address", "addr"]) || "").slice(0, 2000) || null,
+        batch: batch
+      })).filter(r => r.name && r.mobile);
+
+      if (!mapped.length) throw new Error("Every row was missing a name or mobile number.");
+
+      // Chunked so a large file does not hit the request size limit.
+      //
+      // upsert + ignoreDuplicates makes the import RESUMABLE. The chunks are
+      // not one transaction, so a connection drop half way leaves earlier
+      // chunks committed. With a plain insert, re-uploading the same file then
+      // collides with the (batch, mobile) unique index and the whole retry
+      // fails — leaving the supervisor stuck renaming the batch. This way
+      // re-uploading simply skips what already landed and finishes the job.
+      //
+      // ignoreDuplicates means existing rows are left ALONE, not overwritten:
+      // a lead already being worked keeps its assignment and call history.
+      let done = 0;
+      const chunks = chunkForUpload(mapped);
+      for (const chunk of chunks) {
+        const { error } = await sb
+          .from("leads")
+          .upsert(chunk, { onConflict: "batch,mobile", ignoreDuplicates: true });
+        if (error) throw error;
+        done += chunk.length;
+        $("csvStatus").textContent = `Uploaded ${done} of ${mapped.length}…`;
+      }
+
+      const skipped = rows.length - mapped.length;
+      $("csvStatus").innerHTML =
+        `<span class="ok">Imported ${done} leads.</span>` +
+        (skipped ? ` <span class="muted">${skipped} row(s) skipped — missing name or mobile.</span>` : "") +
+        ` <span class="muted">Rows already in batch “${esc(batch)}” were left unchanged;` +
+        ` re-uploading the same file is safe.</span>`;
+      load();
+    } catch (e) {
+      $("csvStatus").innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    } finally {
+      $("csvUpload").disabled = false;
+    }
+  };
+
+  // Rows sent per request. 2000 keeps a typical 2000-lead batch to a single
+  // round trip instead of four.
+  const UPLOAD_ROWS_PER_REQUEST = 2000;
+
+  // ...but rows are not a fixed size. `address` alone allows 2000 characters,
+  // so 2000 fat rows can run to several MB and the API rejects the request.
+  // Cap the encoded payload as well and split early when it is reached, so a
+  // batch of long addresses still uploads instead of failing at full size.
+  const UPLOAD_MAX_BYTES = 3_500_000;
+
+  /**
+   * Split rows into request-sized chunks: at most UPLOAD_ROWS_PER_REQUEST rows
+   * and at most UPLOAD_MAX_BYTES of encoded JSON, whichever comes first.
+   * A single row larger than the byte cap still gets its own chunk rather than
+   * being dropped — the server can reject it and say so.
+   */
+  function chunkForUpload(rows) {
+    const chunks = [];
+    let current = [], bytes = 0;
+    for (const row of rows) {
+      const size = JSON.stringify(row).length + 1;
+      const full = current.length >= UPLOAD_ROWS_PER_REQUEST ||
+                   (current.length > 0 && bytes + size > UPLOAD_MAX_BYTES);
+      if (full) { chunks.push(current); current = []; bytes = 0; }
+      current.push(row);
+      bytes += size;
+    }
+    if (current.length) chunks.push(current);
+    return chunks;
+  }
+
+  /** Minimal RFC-4180 parser: handles quoted fields, embedded commas, "" escapes. */
+  function parseCsv(text) {
+    const rows = [];
+    let field = "", row = [], inQuotes = false;
+    text = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += c;
+      } else if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else field += c;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+
+    const clean = rows.filter(r => r.some(c => c.trim() !== ""));
+    if (clean.length < 2) return [];
+
+    const headers = clean[0].map(h => h.trim().toLowerCase());
+    return clean.slice(1).map(r => {
+      const o = {};
+      headers.forEach((h, i) => o[h] = (r[i] ?? "").trim());
+      return o;
+    });
+  }
+
+  const pick   = (row, keys) => { for (const k of keys) if (row[k]) return row[k]; return null; };
+  const upper  = v => v ? v.toUpperCase() : null;
+  const digits = v => { const d = (v || "").replace(/[^\d+]/g, ""); return d || null; };
+  const num    = v => { const n = parseFloat((v || "").replace(/[^\d.]/g, "")); return isNaN(n) ? null : n; };
+  const isoDate = v => {
+    if (!v) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    const m = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);   // dd/mm/yyyy
+    if (m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+    return null;
+  };
+
+  boot();
+})();
+</script>
+</body>
+</html>
