@@ -263,9 +263,11 @@
       <h2>Import leads (CSV)</h2>
       <p class="muted" style="margin-top:0">
         Expected columns: <code>Name, PAN, Mobile No, Email, DOB, Annual Income
-        Range, Company, ICI Cr Lmt, Address</code>. DOB must be
-        <code>DD-MM-YYYY</code>; Address is capped at 2000 characters and is
-        truncated past that. Give the batch a name so you can report on it later.
+        Range, Company, ICI Cr Lmt, Address</code>. Only <code>Mobile No</code>
+        is required — a row with just a number still imports, and shows to the
+        agent as <em>Name not provided</em>. DOB must be <code>DD-MM-YYYY</code>;
+        Address is capped at 2000 characters and is truncated past that.
+        Give the batch a name so you can report on it later.
       </p>
       <div class="field" style="max-width:340px">
         <label for="batchName">Batch name</label>
@@ -625,7 +627,11 @@
       if (!rows.length) throw new Error("No data rows found.");
 
       const mapped = rows.map(r => ({
-        name:                pick(r, ["name", "customer name", "full name"]),
+        // The mobile number is the only thing a lead genuinely needs — an agent
+        // can ask for the name on the call. But leads.name is NOT NULL and the
+        // Android Lead model types it as non-nullable, so a nameless row gets a
+        // visible placeholder rather than a null the app cannot deserialise.
+        name:                pick(r, ["name", "customer name", "full name"]) || UNKNOWN_NAME,
         pan:                 upper(pick(r, ["pan", "pan no", "pan number"])),
         mobile:              digits(pick(r, ["mobile no", "mobile", "mobile number", "phone"])),
         email:               pick(r, ["email", "email id"]),
@@ -637,9 +643,13 @@
         // over-long cell truncates instead of failing the whole chunk.
         address:             (pick(r, ["address", "residential address", "addr"]) || "").slice(0, 2000) || null,
         batch: batch
-      })).filter(r => r.name && r.mobile);
+      })).filter(r => r.mobile);
 
-      if (!mapped.length) throw new Error("Every row was missing a name or mobile number.");
+      if (!mapped.length) throw new Error("No row had a mobile number, so there is nothing to call.");
+
+      // Rows that arrived without a name, so the supervisor knows how much of
+      // the batch the agents will have to identify on the call.
+      const unnamed = mapped.filter(r => r.name === UNKNOWN_NAME).length;
 
       // A date that cannot be read is stored as no date at all. Silently, the
       // import looks like a success and the missing DOBs are found weeks later,
@@ -675,7 +685,8 @@
       const skipped = rows.length - mapped.length;
       $("csvStatus").innerHTML =
         `<span class="ok">Imported ${done} leads.</span>` +
-        (skipped ? ` <span class="muted">${skipped} row(s) skipped — missing name or mobile.</span>` : "") +
+        (skipped ? ` <span class="muted">${skipped} row(s) skipped — no mobile number.</span>` : "") +
+        (unnamed ? ` <span class="muted">${unnamed} row(s) had no name and show as “${esc(UNKNOWN_NAME)}”.</span>` : "") +
         (badDates ? ` <span class="err">${badDates} DOB(s) could not be read and were left blank —` +
                     ` check the column is DD-MM-YYYY.</span>` : "") +
         ` <span class="muted">Rows already in batch “${esc(batch)}” were left unchanged;` +
@@ -687,6 +698,10 @@
       $("csvUpload").disabled = false;
     }
   };
+
+  // Shown in place of a missing customer name. Deliberately obvious on the
+  // agent's screen so they know to ask, rather than reading out a blank.
+  const UNKNOWN_NAME = "Name not provided";
 
   // Rows sent per request. 2000 keeps a typical 2000-lead batch to a single
   // round trip instead of four.
