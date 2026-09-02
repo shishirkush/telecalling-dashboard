@@ -264,7 +264,7 @@
       <p class="muted" style="margin-top:0">
         Expected columns: <code>Name, PAN, Mobile No, Email, DOB, Annual Income
         Range, Company, ICI Cr Lmt, Address</code>. DOB must be
-        <code>YYYY-MM-DD</code>; Address is capped at 2000 characters and is
+        <code>DD-MM-YYYY</code>; Address is capped at 2000 characters and is
         truncated past that. Give the batch a name so you can report on it later.
       </p>
       <div class="field" style="max-width:340px">
@@ -641,6 +641,15 @@
 
       if (!mapped.length) throw new Error("Every row was missing a name or mobile number.");
 
+      // A date that cannot be read is stored as no date at all. Silently, the
+      // import looks like a success and the missing DOBs are found weeks later,
+      // so count them and say so. A large count almost always means the file is
+      // MM-DD-YYYY rather than DD-MM-YYYY.
+      const badDates = rows.filter(r => {
+        const raw = pick(r, ["dob", "date of birth"]);
+        return raw && !isoDate(raw);
+      }).length;
+
       // Chunked so a large file does not hit the request size limit.
       //
       // upsert + ignoreDuplicates makes the import RESUMABLE. The chunks are
@@ -667,6 +676,8 @@
       $("csvStatus").innerHTML =
         `<span class="ok">Imported ${done} leads.</span>` +
         (skipped ? ` <span class="muted">${skipped} row(s) skipped — missing name or mobile.</span>` : "") +
+        (badDates ? ` <span class="err">${badDates} DOB(s) could not be read and were left blank —` +
+                    ` check the column is DD-MM-YYYY.</span>` : "") +
         ` <span class="muted">Rows already in batch “${esc(batch)}” were left unchanged;` +
         ` re-uploading the same file is safe.</span>`;
       load();
@@ -743,12 +754,31 @@
   const upper  = v => v ? v.toUpperCase() : null;
   const digits = v => { const d = (v || "").replace(/[^\d+]/g, ""); return d || null; };
   const num    = v => { const n = parseFloat((v || "").replace(/[^\d.]/g, "")); return isNaN(n) ? null : n; };
+  /**
+   * DOB arrives as DD-MM-YYYY — the documented format — or DD/MM/YYYY.
+   * ISO YYYY-MM-DD is still accepted because spreadsheets often emit it and
+   * it is unambiguous.
+   *
+   * Out-of-range values return null instead of a malformed string. That
+   * matters more than it looks: a US-format file (12/25/1990) previously
+   * produced "1990-25-12", and Postgres rejects month 25 — so one bad cell
+   * failed the whole 2000-row request with a database error rather than
+   * simply arriving without a date.
+   */
   const isoDate = v => {
     if (!v) return null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-    const m = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);   // dd/mm/yyyy
-    if (m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
-    return null;
+    const s = String(v).trim();
+    let y, mo, d;
+    const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    const dmy = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+    if (iso)      { y = +iso[1]; mo = +iso[2]; d = +iso[3]; }
+    else if (dmy) { d = +dmy[1]; mo = +dmy[2]; y = +dmy[3]; }
+    else return null;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 1900 || y > 2100) return null;
+    // Catches impossible days such as 31-02-1990.
+    const probe = new Date(Date.UTC(y, mo - 1, d));
+    if (probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   };
 
   boot();
