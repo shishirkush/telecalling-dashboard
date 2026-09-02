@@ -346,6 +346,25 @@
       return;
     }
     if (key.length < 30) { $("cfgErr").textContent = "That anon key looks too short."; return; }
+
+    // A key copied from a screen that masks it comes through as bullets or
+    // asterisks. It stores fine and then fails much later, deep inside fetch,
+    // with "String contains non ISO-8859-1 code point" — which tells the
+    // supervisor nothing. Catch it here instead, while the cause is obvious.
+    const nonAscii = [...key].find(ch => ch.codePointAt(0) > 126 || ch.codePointAt(0) < 32);
+    if (nonAscii) {
+      $("cfgErr").textContent =
+        "That key contains a “" + nonAscii + "”, so it is a masked copy rather than the key itself. " +
+        "In Supabase use the copy button next to the anon key — do not select the dots on screen.";
+      return;
+    }
+    // Real keys are JWTs: three dot-separated base64url segments.
+    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(key)) {
+      $("cfgErr").textContent =
+        "That does not look like an anon key. Copy the whole value — it has three parts separated by dots and starts with “eyJ”.";
+      return;
+    }
+
     saveCfg({ url, key });
     location.reload();
   };
