@@ -277,6 +277,25 @@
       <button class="primary" id="csvUpload" disabled>Upload</button>
       <p id="csvStatus" class="muted"></p>
     </div>
+
+    <div class="card">
+      <h2>Create agent</h2>
+      <p class="muted" style="margin-top:0">
+        Login ID and password only. There is no email step for you or the
+        agent — the address Supabase needs underneath is built and used
+        automatically, and only that server-side function ever sees it.
+      </p>
+      <div class="field" style="max-width:340px">
+        <label for="newAgentId">Login ID</label>
+        <input id="newAgentId" placeholder="rahul.k" autocapitalize="none" spellcheck="false">
+      </div>
+      <div class="field" style="max-width:340px">
+        <label for="newAgentPw">Password</label>
+        <input id="newAgentPw" type="password" placeholder="At least 6 characters" autocomplete="new-password">
+      </div>
+      <button class="primary" id="createAgent">Create agent</button>
+      <p id="createAgentStatus" class="muted"></p>
+    </div>
   </main>
 </div>
 
@@ -696,6 +715,59 @@
       $("csvStatus").innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     } finally {
       $("csvUpload").disabled = false;
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Create agent
+  // -----------------------------------------------------------------
+  // Supabase Auth is email/password underneath and there is no way to
+  // change that — so instead of putting an email field in front of the
+  // supervisor, this posts {login_id, password} to a server-side Edge
+  // Function, which expands the login ID to "<login_id>@LOGIN_DOMAIN" and
+  // calls the Admin API itself. The service_role key that step needs lives
+  // only in that function's runtime; it is never fetched into this page.
+  // The function independently re-checks that the caller is an active
+  // supervisor — the button being visible here is not what enforces that.
+  $("createAgent").onclick = async () => {
+    const loginId = $("newAgentId").value.trim();
+    const password = $("newAgentPw").value;
+    const statusEl = $("createAgentStatus");
+
+    if (!loginId || !password) {
+      statusEl.innerHTML = '<span class="err">Enter a login ID and a password.</span>';
+      return;
+    }
+
+    $("createAgent").disabled = true;
+    statusEl.textContent = "Creating…";
+
+    try {
+      const cfg = loadCfg();
+      const { data: sessionData } = await sb.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Your session has expired. Sign in again.");
+
+      const res = await fetch(`${cfg.url}/functions/v1/create-agent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": cfg.key,
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ login_id: loginId, password })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status}).`);
+
+      statusEl.innerHTML = `<span class="ok">Agent “${esc(body.login_id)}” created.</span> ` +
+        `Give them the login ID and the password you just typed — nothing else.`;
+      $("newAgentId").value = "";
+      $("newAgentPw").value = "";
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    } finally {
+      $("createAgent").disabled = false;
     }
   };
 
