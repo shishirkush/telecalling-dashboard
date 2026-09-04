@@ -146,28 +146,6 @@
 </head>
 <body>
 
-<!-- =============== SETUP (first run) =============== -->
-<section id="setup" class="center hidden">
-  <div class="card">
-    <h2>Connect to Supabase</h2>
-    <p class="muted" style="margin-top:0">
-      One-time. Paste your project URL and the <strong>anon</strong> key
-      (Supabase → Project Settings → API). These are stored only in this
-      browser. Never paste the <em>service_role</em> key here.
-    </p>
-    <div class="field">
-      <label for="cfgUrl">Project URL</label>
-      <input id="cfgUrl" placeholder="https://xxxxx.supabase.co" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="cfgKey">Anon public key</label>
-      <input id="cfgKey" placeholder="eyJhbGci..." autocomplete="off">
-    </div>
-    <button class="primary" id="cfgSave">Save</button>
-    <p id="cfgErr" class="err"></p>
-  </div>
-</section>
-
 <!-- =============== LOGIN =============== -->
 <section id="login" class="center hidden">
   <div class="card">
@@ -182,7 +160,6 @@
       <input id="password" type="password" autocomplete="current-password">
     </div>
     <button class="primary" id="signIn">Sign in</button>
-    <button id="resetCfg" style="margin-left:8px">Change project</button>
     <p id="loginErr" class="err"></p>
   </div>
 </section>
@@ -307,7 +284,15 @@
   // -----------------------------------------------------------------
   // Config
   // -----------------------------------------------------------------
-  const CFG_KEY = "telecall_dashboard_cfg";
+  // The anon key is meant to be public — it's the whole point of Row Level
+  // Security. Baking it in here removes a manual "paste your project URL
+  // and key" step for every supervisor; it grants nothing that the same
+  // key sitting in this browser's localStorage didn't already grant. The
+  // service_role key must never appear anywhere in this file.
+  const SUPABASE_URL = "https://bpzfwdcbzkkvwearyzkh.supabase.co";
+  const SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwemZ3ZGNiemtrdndlYXJ5emtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzNTE3NTQsImV4cCI6MjEwMzkyNzc1NH0.Wq2HJW9T6gDeR2XmP7CPnedLYvG5O8tGKU19M7JVs7c";
+
   let sb = null;
   let rangeDays = 0;           // 0 = today, -1 = all time
 
@@ -338,59 +323,15 @@
   const esc = s => String(s ?? "").replace(/[&<>"']/g,
     c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
-  function loadCfg() {
-    try { return JSON.parse(localStorage.getItem(CFG_KEY) || "null"); }
-    catch (e) { return null; }
-  }
-  function saveCfg(c) {
-    try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
-  }
-
   // -----------------------------------------------------------------
   // Boot
   // -----------------------------------------------------------------
   async function boot() {
-    const cfg = loadCfg();
-    if (!cfg || !cfg.url || !cfg.key) { show($("setup"), true); return; }
-
-    sb = window.supabase.createClient(cfg.url, cfg.key);
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const { data } = await sb.auth.getSession();
     if (data && data.session) { await enterApp(); }
     else { show($("login"), true); }
   }
-
-  $("cfgSave").onclick = () => {
-    const url = $("cfgUrl").value.trim().replace(/\/+$/, "");
-    const key = $("cfgKey").value.trim();
-    if (!/^https:\/\/.+\.supabase\.co$/.test(url)) {
-      $("cfgErr").textContent = "That does not look like a Supabase project URL.";
-      return;
-    }
-    if (key.length < 30) { $("cfgErr").textContent = "That anon key looks too short."; return; }
-
-    // A key copied from a screen that masks it comes through as bullets or
-    // asterisks. It stores fine and then fails much later, deep inside fetch,
-    // with "String contains non ISO-8859-1 code point" — which tells the
-    // supervisor nothing. Catch it here instead, while the cause is obvious.
-    const nonAscii = [...key].find(ch => ch.codePointAt(0) > 126 || ch.codePointAt(0) < 32);
-    if (nonAscii) {
-      $("cfgErr").textContent =
-        "That key contains a “" + nonAscii + "”, so it is a masked copy rather than the key itself. " +
-        "In Supabase use the copy button next to the anon key — do not select the dots on screen.";
-      return;
-    }
-    // Real keys are JWTs: three dot-separated base64url segments.
-    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(key)) {
-      $("cfgErr").textContent =
-        "That does not look like an anon key. Copy the whole value — it has three parts separated by dots and starts with “eyJ”.";
-      return;
-    }
-
-    saveCfg({ url, key });
-    location.reload();
-  };
-
-  $("resetCfg").onclick = () => { localStorage.removeItem(CFG_KEY); location.reload(); };
 
   $("signIn").onclick = async () => {
     $("loginErr").textContent = "";
@@ -454,7 +395,6 @@
 
     $("whoami").textContent = profile.full_name || "";
     show($("login"), false);
-    show($("setup"), false);
     show($("app"), true);
     load();
   }
@@ -743,16 +683,15 @@
     statusEl.textContent = "Creating…";
 
     try {
-      const cfg = loadCfg();
       const { data: sessionData } = await sb.auth.getSession();
       const token = sessionData?.session?.access_token;
       if (!token) throw new Error("Your session has expired. Sign in again.");
 
-      const res = await fetch(`${cfg.url}/functions/v1/create-agent`, {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/create-agent`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "apikey": cfg.key,
+          "apikey": SUPABASE_ANON_KEY,
           "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify({ login_id: loginId, password })
