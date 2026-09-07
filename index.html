@@ -239,7 +239,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card hidden" id="csvCard">
       <h2>Import leads (CSV)</h2>
       <p class="muted" style="margin-top:0">
         Expected columns: <code>Name, PAN, Mobile No, Email, DOB, Annual Income
@@ -258,7 +258,7 @@
       <p id="csvStatus" class="muted"></p>
     </div>
 
-    <div class="card">
+    <div class="card hidden" id="createAgentCard">
       <h2>Create agent</h2>
       <p class="muted" style="margin-top:0">
         Login ID and password only. There is no email step for you or the
@@ -275,6 +275,22 @@
       </div>
       <button class="primary" id="createAgent">Create agent</button>
       <p id="createAgentStatus" class="muted"></p>
+    </div>
+
+    <div class="card hidden" id="assignmentsCard">
+      <h2>Manage agent assignments</h2>
+      <p class="muted" style="margin-top:0">
+        A manager sees reports only for the agents checked here — nothing
+        is visible to a manager until at least one agent is assigned.
+        Admin accounts always see everyone regardless of this list.
+      </p>
+      <div class="field" style="max-width:340px">
+        <label for="assignManagerSelect">Manager</label>
+        <select id="assignManagerSelect"></select>
+      </div>
+      <div id="assignAgentList" style="margin:12px 0"></div>
+      <button class="primary" id="saveAssignments">Save assignments</button>
+      <p id="assignStatus" class="muted"></p>
     </div>
   </main>
 </div>
@@ -298,6 +314,7 @@
 
   let sb = null;
   let rangeDays = 0;           // 0 = today, -1 = all time
+  let isAdmin = false;
 
   const STATUS_META = [
     { wire: "LEAD",           label: "Lead",           varName: "--s-lead" },
@@ -380,7 +397,7 @@
     if (!uid) { show($("login"), true); return; }
 
     const { data: profile, error } = await sb
-      .from("profiles").select("full_name, role").eq("id", uid).single();
+      .from("profiles").select("full_name, role, is_admin").eq("id", uid).single();
 
     if (error || !profile) {
       $("loginErr").textContent = "No profile found for this account.";
@@ -397,10 +414,15 @@
       return;
     }
 
-    $("whoami").textContent = profile.full_name || "";
+    isAdmin = !!profile.is_admin;
+    $("whoami").textContent = (profile.full_name || "") + (isAdmin ? " (admin)" : "");
+    show($("csvCard"), isAdmin);
+    show($("createAgentCard"), isAdmin);
+    show($("assignmentsCard"), isAdmin);
     show($("login"), false);
     show($("app"), true);
     load();
+    if (isAdmin) loadAssignmentsPanel();
   }
 
   // -----------------------------------------------------------------
@@ -704,14 +726,120 @@
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status}).`);
 
-      statusEl.innerHTML = `<span class="ok">Agent “${esc(body.login_id)}” created.</span> ` +
+      statusEl.innerHTML = `<span class="ok">Agent "${esc(body.login_id)}" created.</span> ` +
         `Give them the login ID and the password you just typed — nothing else.`;
       $("newAgentId").value = "";
       $("newAgentPw").value = "";
+      if (isAdmin) loadAssignmentsPanel();
     } catch (e) {
       statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     } finally {
       $("createAgent").disabled = false;
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Manage agent assignments (admin only)
+  // -----------------------------------------------------------------
+  // A manager sees reports only for agents in `manager_agents` — see
+  // backend/09_manager_scoping.sql. This panel is just CRUD on that
+  // table; the RLS policy on it (admin-only) is what actually enforces
+  // who may write to it, same "the button isn't the security" pattern
+  // as Create Agent above.
+  let assignManagers = [];   // [{id, login_id}] — role=supervisor, is_admin=false
+  let assignAgents = [];     // [{id, login_id}] — role=agent
+  let assignCurrentSet = new Set(); // agent ids currently assigned to the selected manager
+
+  async function loadAssignmentsPanel() {
+    const statusEl = $("assignStatus");
+    statusEl.textContent = "";
+    try {
+      const { data: profiles, error } = await sb
+        .from("profiles")
+        .select("id, login_id, role, is_admin")
+        .order("login_id");
+      if (error) throw error;
+
+      assignManagers = profiles.filter(p => p.role === "supervisor" && !p.is_admin);
+      assignAgents = profiles.filter(p => p.role === "agent");
+
+      const select = $("assignManagerSelect");
+      const prevSelected = select.value;
+      select.innerHTML = assignManagers.length
+        ? assignManagers.map(m => `<option value="${esc(m.id)}">${esc(m.login_id)}</option>`).join("")
+        : `<option value="">No manager accounts yet</option>`;
+      if (prevSelected && assignManagers.some(m => m.id === prevSelected)) select.value = prevSelected;
+
+      await loadAssignmentsForSelectedManager();
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    }
+  }
+
+  async function loadAssignmentsForSelectedManager() {
+    const managerId = $("assignManagerSelect").value;
+    const listEl = $("assignAgentList");
+    if (!managerId) {
+      assignCurrentSet = new Set();
+      listEl.innerHTML = '<p class="muted">No managers to assign agents to yet — create a supervisor account first.</p>';
+      return;
+    }
+    const { data: rows, error } = await sb
+      .from("manager_agents")
+      .select("agent_id")
+      .eq("manager_id", managerId);
+    if (error) { listEl.innerHTML = '<span class="err">' + esc(error.message) + "</span>"; return; }
+
+    assignCurrentSet = new Set(rows.map(r => r.agent_id));
+    listEl.innerHTML = assignAgents.length
+      ? assignAgents.map(a => `
+        <label style="display:flex; align-items:center; gap:8px; padding:6px 0">
+          <input type="checkbox" value="${esc(a.id)}" ${assignCurrentSet.has(a.id) ? "checked" : ""}>
+          ${esc(a.login_id)}
+        </label>`).join("")
+      : '<p class="muted">No agent accounts yet.</p>';
+  }
+
+  $("assignManagerSelect").onchange = loadAssignmentsForSelectedManager;
+
+  $("saveAssignments").onclick = async () => {
+    const statusEl = $("assignStatus");
+    const managerId = $("assignManagerSelect").value;
+    if (!managerId) return;
+
+    const checked = new Set(
+      [...document.querySelectorAll('#assignAgentList input[type="checkbox"]:checked')]
+        .map(el => el.value)
+    );
+    const toAdd = [...checked].filter(id => !assignCurrentSet.has(id));
+    const toRemove = [...assignCurrentSet].filter(id => !checked.has(id));
+
+    if (!toAdd.length && !toRemove.length) {
+      statusEl.innerHTML = '<span class="ok">Nothing changed.</span>';
+      return;
+    }
+
+    $("saveAssignments").disabled = true;
+    statusEl.textContent = "Saving…";
+    try {
+      if (toAdd.length) {
+        const { error } = await sb.from("manager_agents")
+          .insert(toAdd.map(agent_id => ({ manager_id: managerId, agent_id })));
+        if (error) throw error;
+      }
+      if (toRemove.length) {
+        const { error } = await sb.from("manager_agents")
+          .delete()
+          .eq("manager_id", managerId)
+          .in("agent_id", toRemove);
+        if (error) throw error;
+      }
+      assignCurrentSet = checked;
+      statusEl.innerHTML = `<span class="ok">Saved — ${checked.size} agent(s) assigned.</span>`;
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    } finally {
+      $("saveAssignments").disabled = false;
     }
   };
 
