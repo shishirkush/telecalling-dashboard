@@ -270,9 +270,15 @@ begin
        -- skip callbacks that are not due yet
        and (c.callback_at is null or c.callback_at <= now())
      order by
-       -- due callbacks first, then oldest untouched leads
+       -- due callbacks first
        (c.callback_at is not null) desc,
        c.callback_at asc nulls last,
+       -- then never-attempted leads before ones already tried once —
+       -- see backend/08_fix_queue_reorder.sql for why: without this, a
+       -- lead released back to the pool (SWITCHED_OFF, NO_ANSWER) could
+       -- be immediately re-served on the very next claim if it had a low id.
+       c.attempts asc,
+       c.last_called_at asc nulls first,
        c.id asc
      limit 1
      for update skip locked
