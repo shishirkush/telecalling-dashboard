@@ -11,9 +11,12 @@
 
 create type user_role as enum ('agent', 'supervisor');
 
--- The five call outcomes from the spec.
+-- The call outcomes. NO_ANSWER added in migration 07 — see backend/07_no_answer_status.sql
+-- for why it's a separate `alter type ... add value` on a live database
+-- rather than just an edit to this file.
 create type call_status as enum (
   'SWITCHED_OFF',
+  'NO_ANSWER',
   'WRONG_NUMBER',
   'NOT_INTERESTED',
   'CALL_LATER',
@@ -375,6 +378,7 @@ select
   count(*) filter (where d.status = 'CALL_LATER')            as call_later,
   count(*) filter (where d.status = 'SWITCHED_OFF')          as switched_off,
   count(*) filter (where d.status = 'WRONG_NUMBER')          as wrong_number,
+  count(*) filter (where d.status = 'NO_ANSWER')             as no_answer,
   round(
     100.0 * count(*) filter (where d.status = 'LEAD')
     / nullif(count(d.id), 0), 1

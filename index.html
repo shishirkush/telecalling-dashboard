@@ -25,6 +25,7 @@
     --s-not-interested:#1baf7a;   /* slot 3 */
     --s-wrong-number:  #eda100;   /* slot 4 */
     --s-switched-off:  #e87ba4;   /* slot 5 */
+    --s-no-answer:     #008300;   /* slot 6 */
 
     --good:            #0ca30c;
     --critical:        #d03b3b;
@@ -47,6 +48,7 @@
       --s-not-interested:#199e70;
       --s-wrong-number:  #c98500;
       --s-switched-off:  #d55181;
+      --s-no-answer:     #008300;
     }
   }
 
@@ -206,6 +208,7 @@
             <th class="num">Not int.</th>
             <th class="num">Wrong no.</th>
             <th class="num">Switched off</th>
+            <th class="num">No answer</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -301,7 +304,8 @@
     { wire: "CALL_LATER",     label: "Call Later",     varName: "--s-call-later" },
     { wire: "NOT_INTERESTED", label: "Not Interested", varName: "--s-not-interested" },
     { wire: "WRONG_NUMBER",   label: "Wrong No.",      varName: "--s-wrong-number" },
-    { wire: "SWITCHED_OFF",   label: "Switched Off",   varName: "--s-switched-off" }
+    { wire: "SWITCHED_OFF",   label: "Switched Off",   varName: "--s-switched-off" },
+    { wire: "NO_ANSWER",      label: "No Answer",      varName: "--s-no-answer" }
   ];
   const metaFor = w => STATUS_META.find(s => s.wire === w) ||
                        { label: w || "—", varName: "--text-muted" };
@@ -504,7 +508,7 @@
     profs.filter(p => p.role === "agent").forEach(p => {
       rows[p.id] = { name: p.full_name || "—", total: 0,
                      LEAD: 0, CALL_LATER: 0, NOT_INTERESTED: 0,
-                     WRONG_NUMBER: 0, SWITCHED_OFF: 0 };
+                     WRONG_NUMBER: 0, SWITCHED_OFF: 0, NO_ANSWER: 0 };
     });
     disp.forEach(d => {
       const r = rows[d.agent_id];
@@ -525,8 +529,9 @@
         <td class="num">${r.NOT_INTERESTED}</td>
         <td class="num">${r.WRONG_NUMBER}</td>
         <td class="num">${r.SWITCHED_OFF}</td>
+        <td class="num">${r.NO_ANSWER}</td>
       </tr>`).join("")
-      : `<tr><td colspan="8" class="muted">No agents yet.</td></tr>`;
+      : `<tr><td colspan="9" class="muted">No agents yet.</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
