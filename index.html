@@ -186,6 +186,28 @@
 
     <div class="tiles" id="tiles"></div>
 
+    <div class="card hidden" id="dbStatsCard">
+      <h2>Database</h2>
+      <p class="muted" style="margin-top:0">
+        The whole lead pool — every lead ever imported, not scoped to the
+        date range above or to any one manager's agents.
+      </p>
+      <div class="tiles" id="dbTiles"></div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table id="batchTable">
+          <thead><tr>
+            <th>Batch</th>
+            <th class="num">Total</th>
+            <th class="num">Called</th>
+            <th class="num">Pending</th>
+            <th class="num">Closed</th>
+            <th>Imported</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Call outcomes</h2>
       <div id="chart"></div>
@@ -380,7 +402,7 @@
     $(f).addEventListener("keydown", e => { if (e.key === "Enter") $("signIn").click(); }));
 
   $("signOut").onclick = async () => { await sb.auth.signOut(); location.reload(); };
-  $("refresh").onclick = () => load();
+  $("refresh").onclick = () => { load(); if (isAdmin) loadDatabaseStats(); };
 
   document.querySelectorAll(".filters button").forEach(b => {
     b.onclick = () => {
@@ -419,10 +441,11 @@
     show($("csvCard"), isAdmin);
     show($("createAgentCard"), isAdmin);
     show($("assignmentsCard"), isAdmin);
+    show($("dbStatsCard"), isAdmin);
     show($("login"), false);
     show($("app"), true);
     load();
-    if (isAdmin) loadAssignmentsPanel();
+    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); }
   }
 
   // -----------------------------------------------------------------
@@ -842,6 +865,70 @@
       $("saveAssignments").disabled = false;
     }
   };
+
+  // -----------------------------------------------------------------
+  // Database report (admin only)
+  // -----------------------------------------------------------------
+  // Whole lead pool, no date filter — "how much of the database is left
+  // to call" rather than "how did today go". Counts come straight off
+  // `leads`/`call_dispositions` via PostgREST's exact count (head:true
+  // fetches zero rows, just the count), and the batch breakdown comes
+  // from v_batch_summary (backend/10_database_report.sql). Both run
+  // under admin's own RLS, which is what makes the totals whole-pool
+  // rather than scoped to admin's own assigned agents (admin has none).
+  async function loadDatabaseStats() {
+    const tilesEl = $("dbTiles");
+    const tbody = $("batchTable").querySelector("tbody");
+    try {
+      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes] = await Promise.all([
+        sb.from("leads").select("id", { count: "exact", head: true }),
+        sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
+        sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
+        sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
+        sb.from("call_dispositions").select("id", { count: "exact", head: true }),
+        sb.from("v_batch_summary").select("*")
+      ]);
+      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes]) {
+        if (r.error) throw r.error;
+      }
+
+      const total = totalRes.count ?? 0;
+      const called = calledRes.count ?? 0;
+      const pendingPct = total ? (100 * (pendingRes.count ?? 0) / total).toFixed(1) : "0.0";
+
+      tilesEl.innerHTML = `
+        <div class="tile"><div class="label">Total leads</div>
+          <div class="value">${total}</div>
+          <div class="sub">every lead ever imported</div></div>
+        <div class="tile"><div class="label">Called at least once</div>
+          <div class="value">${called}</div>
+          <div class="sub">${total ? (100 * called / total).toFixed(1) : "0.0"}% of total</div></div>
+        <div class="tile"><div class="label">Never called (pending)</div>
+          <div class="value">${pendingRes.count ?? 0}</div>
+          <div class="sub">${pendingPct}% of total</div></div>
+        <div class="tile"><div class="label">Closed</div>
+          <div class="value">${closedRes.count ?? 0}</div>
+          <div class="sub">wrong no. / not interested / lead</div></div>
+        <div class="tile"><div class="label">Total call attempts</div>
+          <div class="value">${attemptsRes.count ?? 0}</div>
+          <div class="sub">all-time, every outcome</div></div>`;
+
+      const rows = batchRes.data || [];
+      tbody.innerHTML = rows.length
+        ? rows.map(b => `
+          <tr>
+            <td>${esc(b.batch)}</td>
+            <td class="num">${b.total}</td>
+            <td class="num">${b.called}</td>
+            <td class="num">${b.pending}</td>
+            <td class="num">${b.closed}</td>
+            <td>${esc(fmtDT(new Date(b.imported_at)))}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="6" class="muted">No leads imported yet.</td></tr>`;
+    } catch (e) {
+      tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    }
+  }
 
   // Shown in place of a missing customer name. Deliberately obvious on the
   // agent's screen so they know to ask, rather than reading out a blank.
