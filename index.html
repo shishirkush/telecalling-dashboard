@@ -202,6 +202,7 @@
             <th class="num">Pending</th>
             <th class="num">Closed</th>
             <th>Imported</th>
+            <th></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -923,12 +924,51 @@
             <td class="num">${b.pending}</td>
             <td class="num">${b.closed}</td>
             <td>${esc(fmtDT(new Date(b.imported_at)))}</td>
+            <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
-        : `<tr><td colspan="6" class="muted">No leads imported yet.</td></tr>`;
+        : `<tr><td colspan="7" class="muted">No leads imported yet.</td></tr>`;
     } catch (e) {
       tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
   }
+
+  // Deleting a batch cascades to that batch's call_dispositions,
+  // lead_access_log and lead_edit_log rows too (on delete cascade off
+  // leads.id) — real, irreversible call-history loss, not just removing
+  // unworked rows. delete_batch() is admin-only and re-checks that
+  // server-side; this button isn't the security either. The "no batch"
+  // row is v_batch_summary's display sentinel for a null batch, not a
+  // real value — translate it back to null rather than sending the
+  // literal string, which won't match any row.
+  $("batchTable").addEventListener("click", async (e) => {
+    const btn = e.target.closest(".delete-batch");
+    if (!btn) return;
+    const batch = btn.dataset.batch;
+    const realBatch = batch === "(no batch)" ? null : batch;
+
+    const typed = prompt(
+      `Type the batch name to permanently delete it and every call logged against it:\n\n${batch}`
+    );
+    if (typed !== batch) {
+      if (typed !== null) alert("Batch name didn't match — nothing deleted.");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+    try {
+      const { data, error } = await sb.rpc("delete_batch", { p_batch: realBatch });
+      if (error) throw error;
+      const result = Array.isArray(data) ? data[0] : data;
+      alert(`Deleted ${result.deleted_leads} lead(s) and ${result.deleted_dispositions} call record(s) from "${batch}".`);
+      loadDatabaseStats();
+      load();
+    } catch (err) {
+      alert("Could not delete batch: " + (err.message || err));
+      btn.disabled = false;
+      btn.textContent = "Delete";
+    }
+  });
 
   // Shown in place of a missing customer name. Deliberately obvious on the
   // agent's screen so they know to ask, rather than reading out a blank.
