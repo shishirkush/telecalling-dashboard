@@ -847,14 +847,18 @@
   // agent's screen so they know to ask, rather than reading out a blank.
   const UNKNOWN_NAME = "Name not provided";
 
-  // Rows sent per request. 2000 keeps a typical 2000-lead batch to a single
-  // round trip instead of four.
-  const UPLOAD_ROWS_PER_REQUEST = 2000;
+  // Rows sent per request. Raised from 2000 to 50000 so a large batch is
+  // one round trip instead of many — but rows are not a fixed size, so
+  // UPLOAD_MAX_BYTES below is what actually limits a request in practice
+  // for typical rows; this row cap mostly matters for short/skinny rows
+  // (little to no address text), which stay small even at 50000 of them.
+  const UPLOAD_ROWS_PER_REQUEST = 50_000;
 
   // ...but rows are not a fixed size. `address` alone allows 2000 characters,
-  // so 2000 fat rows can run to several MB and the API rejects the request.
-  // Cap the encoded payload as well and split early when it is reached, so a
-  // batch of long addresses still uploads instead of failing at full size.
+  // so a batch of fat rows can run to several MB well before hitting the row
+  // cap above, and the API rejects an over-sized request. Cap the encoded
+  // payload as well and split early when it is reached, so a batch of long
+  // addresses still uploads (in more, smaller chunks) instead of failing.
   const UPLOAD_MAX_BYTES = 3_500_000;
 
   /**
