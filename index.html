@@ -208,6 +208,24 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <h2 style="margin-top:24px">Apply Card SMS delivery</h2>
+      <p class="muted" style="margin-top:0">
+        What actually happened when the app tried to text the Apply Card link
+        alongside a call — agents are remote, so this is the only way to see
+        a denied permission or a carrier failure on their own phone.
+        All-time, every agent.
+      </p>
+      <div class="table-wrap">
+        <table id="smsOutcomeTable">
+          <thead><tr>
+            <th>Outcome</th>
+            <th class="num">Count</th>
+            <th>Most recent</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -888,16 +906,18 @@
   async function loadDatabaseStats() {
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
+    const smsTbody = $("smsOutcomeTable").querySelector("tbody");
     try {
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes] = await Promise.all([
+      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes] = await Promise.all([
         sb.from("leads").select("id", { count: "exact", head: true }),
         sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
         sb.from("call_dispositions").select("id", { count: "exact", head: true }),
-        sb.from("v_batch_summary").select("*")
+        sb.from("v_batch_summary").select("*"),
+        sb.from("v_sms_outcomes").select("*")
       ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes]) {
+      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes]) {
         if (r.error) throw r.error;
       }
 
@@ -940,6 +960,21 @@
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
         : `<tr><td colspan="8" class="muted">No leads imported yet.</td></tr>`;
+
+      // "sent" is the only outcome that means the text actually went out;
+      // everything else — a denied permission, no carrier service, a
+      // radio-off phone — is a real device the Apply Card message never
+      // reached. Sorted by count already (v_sms_outcomes), so the biggest
+      // failure mode is the top non-"sent" row.
+      const smsRows = smsRes.data || [];
+      smsTbody.innerHTML = smsRows.length
+        ? smsRows.map(o => `
+          <tr>
+            <td class="${o.outcome === "sent" ? "ok" : "err"}">${esc(o.outcome)}</td>
+            <td class="num">${o.total}</td>
+            <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="3" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
     } catch (e) {
       tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
