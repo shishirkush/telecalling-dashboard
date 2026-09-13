@@ -202,6 +202,7 @@
             <th class="num">Pending</th>
             <th class="num">Closed</th>
             <th>Imported</th>
+            <th>Calling</th>
             <th></th>
           </tr></thead>
           <tbody></tbody>
@@ -692,6 +693,13 @@
         $("csvStatus").textContent = `Uploaded ${done} of ${mapped.length}…`;
       }
 
+      // Register the batch as callable (defaults to active) so it shows up
+      // in the Database section's toggle list right away — ignoreDuplicates
+      // means an existing batch's on/off state is never touched by a
+      // re-upload. See backend/13_batch_active_toggle.sql.
+      await sb.from("batch_settings")
+        .upsert({ batch }, { onConflict: "batch", ignoreDuplicates: true });
+
       const skipped = rows.length - mapped.length;
       $("csvStatus").innerHTML =
         `<span class="ok">Imported ${done} leads.</span>` +
@@ -924,9 +932,14 @@
             <td class="num">${b.pending}</td>
             <td class="num">${b.closed}</td>
             <td>${esc(fmtDT(new Date(b.imported_at)))}</td>
+            <td>${b.batch === "(no batch)"
+                ? '<span class="muted">always on</span>'
+                : `<button class="toggle-active ${b.is_active ? "ok" : "err"}"
+                     data-batch="${esc(b.batch)}" data-active="${b.is_active}">
+                     ${b.is_active ? "On" : "Off"}</button>`}</td>
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
-        : `<tr><td colspan="7" class="muted">No leads imported yet.</td></tr>`;
+        : `<tr><td colspan="8" class="muted">No leads imported yet.</td></tr>`;
     } catch (e) {
       tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
@@ -940,7 +953,31 @@
   // row is v_batch_summary's display sentinel for a null batch, not a
   // real value — translate it back to null rather than sending the
   // literal string, which won't match any row.
+  // Turning a batch off changes what agents get served on their very next
+  // "Next lead" tap — reversible, unlike Delete, so a plain confirm() is
+  // enough rather than the typed-name prompt below. batch_settings has no
+  // row for a batch until the first toggle or import, hence upsert rather
+  // than update.
   $("batchTable").addEventListener("click", async (e) => {
+    const toggle = e.target.closest(".toggle-active");
+    if (toggle) {
+      const batch = toggle.dataset.batch;
+      const nextActive = toggle.dataset.active !== "true";
+      if (!nextActive && !confirm(`Stop agents from being served leads from "${batch}"?`)) return;
+
+      toggle.disabled = true;
+      try {
+        const { error } = await sb.from("batch_settings")
+          .upsert({ batch, is_active: nextActive }, { onConflict: "batch" });
+        if (error) throw error;
+        loadDatabaseStats();
+      } catch (err) {
+        alert("Could not change calling status: " + (err.message || err));
+        toggle.disabled = false;
+      }
+      return;
+    }
+
     const btn = e.target.closest(".delete-batch");
     if (!btn) return;
     const batch = btn.dataset.batch;
