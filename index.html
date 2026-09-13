@@ -226,6 +226,24 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <h2 style="margin-top:24px">App versions</h2>
+      <p class="muted" style="margin-top:0">
+        What each agent's phone last reported on launch — this app is
+        sideloaded, so this is the only way to know who has actually
+        updated. Blank means that phone has never run a build new enough
+        to report it (v1.7.1 or later).
+      </p>
+      <div class="table-wrap">
+        <table id="appVersionTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Version</th>
+            <th>Last reported</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -907,17 +925,19 @@
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
     const smsTbody = $("smsOutcomeTable").querySelector("tbody");
+    const versionTbody = $("appVersionTable").querySelector("tbody");
     try {
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes] = await Promise.all([
+      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes] = await Promise.all([
         sb.from("leads").select("id", { count: "exact", head: true }),
         sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
         sb.from("call_dispositions").select("id", { count: "exact", head: true }),
         sb.from("v_batch_summary").select("*"),
-        sb.from("v_sms_outcomes").select("*")
+        sb.from("v_sms_outcomes").select("*"),
+        sb.from("v_app_versions").select("*")
       ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes]) {
+      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes]) {
         if (r.error) throw r.error;
       }
 
@@ -975,6 +995,32 @@
             <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
           </tr>`).join("")
         : `<tr><td colspan="3" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
+
+      // Green only for whichever version is the newest ANY agent has
+      // actually reported — there's no fixed "latest" constant to compare
+      // against here (that lives in the GitHub release, not this page),
+      // so "up to date" means "matches the furthest-along phone we know
+      // about," not a guarantee that's the true latest release.
+      const versionRows = versionRes.data || [];
+      const newest = versionRows.reduce((best, v) => {
+        if (!v.app_version) return best;
+        const parts = v.app_version.split(".").map(Number);
+        const bestParts = (best || "").split(".").map(Number);
+        for (let i = 0; i < Math.max(parts.length, bestParts.length); i++) {
+          const a = parts[i] || 0, b = bestParts[i] || 0;
+          if (a !== b) return a > b ? v.app_version : best;
+        }
+        return best || v.app_version;
+      }, null);
+      versionTbody.innerHTML = versionRows.length
+        ? versionRows.map(v => `
+          <tr>
+            <td>${esc(v.full_name)}${v.active ? "" : ' <span class="muted">(inactive)</span>'}</td>
+            <td class="${v.app_version ? (v.app_version === newest ? "ok" : "err") : "muted"}">
+              ${esc(v.app_version || "never reported")}</td>
+            <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="3" class="muted">No agents yet.</td></tr>`;
     } catch (e) {
       tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
