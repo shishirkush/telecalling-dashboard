@@ -238,7 +238,11 @@
         (from v1.9.4) is per-install and stable across relaunches, unlike
         Device which is just a model name shared by every unit of that
         model — two agents showing the same Device ID in red really are
-        on the same physical phone, not just the same phone model.
+        on the same physical phone, not just the same phone model. Archive
+        an agent who has left — they immediately lose the ability to sign
+        in or place calls, and any lead still assigned to them goes back
+        to the pool for someone else to claim. Reversible any time from
+        this same button.
       </p>
       <div class="table-wrap">
         <table id="appVersionTable">
@@ -248,7 +252,7 @@
             <th>Device</th>
             <th>Device ID</th>
             <th>Last reported</th>
-            <th>Status</th>
+            <th>Archive</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1082,9 +1086,9 @@
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td class="${sharedDeviceId ? "err" : ""}" title="${sharedDeviceId ? "Same Device ID as another agent" : ""}">${esc(v.device_id || "—")}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
-            <td><button class="toggle-agent-active ${v.active ? "ok" : "err"}"
+            <td><button class="toggle-agent-active ${v.active ? "" : "err"}"
                  data-agent-id="${esc(v.id)}" data-name="${esc(v.full_name)}" data-active="${v.active}">
-                 ${v.active ? "Active" : "Inactive"}</button></td>
+                 ${v.active ? "Archive" : "Archived — undo"}</button></td>
           </tr>`;
           }).join("")
         : `<tr><td colspan="6" class="muted">No agents yet.</td></tr>`;
@@ -1169,15 +1173,16 @@
     }
   });
 
-  // There's no real "delete agent" here — call_dispositions.agent_id has
-  // no ON DELETE clause, so Postgres refuses to remove a profile that has
-  // ever made a call, and that history is exactly what you'd want to keep
-  // anyway (see backend/19_deactivate_agent.sql). Deactivating is the
-  // actual mechanism: an inactive agent can no longer sign in and act
-  // (every RPC checks their own profile's `active`), and set_agent_active
-  // also frees their currently-open leads back to the pool so they don't
-  // sit stuck assigned to someone who's gone. Reversible from here too —
-  // a plain confirm() on deactivate is enough, no typed-name prompt.
+  // "Archive" for an exited employee — there's no real delete available:
+  // call_dispositions.agent_id has no ON DELETE clause, so Postgres
+  // refuses to remove a profile that has ever made a call, and that
+  // history is exactly what you'd want to keep anyway (see
+  // backend/19_deactivate_agent.sql). Archiving is set_agent_active(p,
+  // false) under the hood: the agent can no longer sign in and act (every
+  // RPC checks their own profile's `active`), and it frees their
+  // currently-open leads back to the pool so they don't sit stuck
+  // assigned to someone who's gone. Reversible from the same button — a
+  // plain confirm() is enough, no typed-name prompt.
   $("appVersionTable").addEventListener("click", async (e) => {
     const btn = e.target.closest(".toggle-agent-active");
     if (!btn) return;
@@ -1186,7 +1191,7 @@
     const nextActive = btn.dataset.active !== "true";
 
     if (!nextActive && !confirm(
-      `Deactivate "${name}"? They will no longer be able to sign in or ` +
+      `Archive "${name}"? They will no longer be able to sign in or ` +
       `place calls, and any lead currently assigned to them will be ` +
       `released back to the pool for another agent to claim.`
     )) return;
@@ -1200,7 +1205,7 @@
       if (error) throw error;
       loadDatabaseStats();
     } catch (err) {
-      alert("Could not change agent status: " + (err.message || err));
+      alert("Could not change agent's archive status: " + (err.message || err));
       btn.disabled = false;
     }
   });
