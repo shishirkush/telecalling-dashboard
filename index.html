@@ -172,6 +172,7 @@
     <h1>Telecalling — Supervisor</h1>
     <span class="spacer"></span>
     <span id="whoami" class="muted"></span>
+    <button id="openLoginActivity">Login Activity</button>
     <button id="refresh">Refresh</button>
     <button id="signOut">Sign out</button>
   </header>
@@ -423,6 +424,40 @@
   </main>
 </div>
 
+<!-- =============== LOGIN ACTIVITY (separate page) =============== -->
+<div id="loginActivityPage" class="hidden">
+  <header>
+    <h1>Login activity</h1>
+    <span class="spacer"></span>
+    <button id="backFromLoginActivity">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        Every sign-in and sign-out the app or web client got a chance to
+        report, for the date range selected on the main dashboard. This
+        is not a guarantee someone was signed out the whole time between
+        a login and its next logout — a killed app or a closed browser
+        tab never gets to report that. Calling hours are 9:00 AM–7:00 PM
+        IST; a login or logout outside that window is highlighted below
+        (leads themselves can only be claimed inside it, enforced
+        server-side in claim_next_lead()).
+      </p>
+      <div class="table-wrap scroll-y">
+        <table id="loginActivityTable">
+          <thead><tr>
+            <th>When (IST)</th>
+            <th>Agent</th>
+            <th>Event</th>
+            <th>Platform</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 (function () {
@@ -509,7 +544,11 @@
     $(f).addEventListener("keydown", e => { if (e.key === "Enter") $("signIn").click(); }));
 
   $("signOut").onclick = async () => { await sb.auth.signOut(); location.reload(); };
-  $("refresh").onclick = () => { load(); if (isAdmin) loadDatabaseStats(); };
+  $("refresh").onclick = () => {
+    load();
+    if (isAdmin) loadDatabaseStats();
+    if (!$("loginActivityPage").classList.contains("hidden")) loadLoginActivity();
+  };
 
   document.querySelectorAll(".filters button").forEach(b => {
     b.onclick = () => {
@@ -517,8 +556,68 @@
         .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
       rangeDays = Number(b.dataset.days);
       load();
+      if (!$("loginActivityPage").classList.contains("hidden")) loadLoginActivity();
     };
   });
+
+  // Scoped the same as the rest of reporting (recent calls, callbacks,
+  // agent performance) — manages_agent() in backend/09_manager_scoping.sql:
+  // a manager sees it for their assigned agents, admin sees everyone. Not
+  // tucked behind isAdmin like App versions/DB stats, since this is
+  // ordinary reporting, not an administrative control.
+  $("openLoginActivity").onclick = () => {
+    show($("app"), false);
+    show($("loginActivityPage"), true);
+    loadLoginActivity();
+  };
+  $("backFromLoginActivity").onclick = () => {
+    show($("loginActivityPage"), false);
+    show($("app"), true);
+  };
+
+  // 9 AM–7 PM IST is the same window claim_next_lead() enforces server-
+  // side (backend/21_login_log_and_calling_hours.sql) — flagging it here
+  // too makes "did someone log in/out outside calling hours" visible at
+  // a glance instead of requiring mental timezone math on every row.
+  function istMinutesOfDay(iso) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata", hourCycle: "h23", hour: "2-digit", minute: "2-digit"
+    }).formatToParts(new Date(iso));
+    const hour = Number(parts.find(p => p.type === "hour").value);
+    const minute = Number(parts.find(p => p.type === "minute").value);
+    return hour * 60 + minute;
+  }
+  function isOutsideCallingHours(iso) {
+    const m = istMinutesOfDay(iso);
+    return m < 9 * 60 || m >= 19 * 60;
+  }
+  function fmtIst(iso) {
+    return new Date(iso).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata", day: "2-digit", month: "short",
+      hour: "2-digit", minute: "2-digit", hour12: true
+    });
+  }
+
+  async function loadLoginActivity() {
+    const tbody = $("loginActivityTable").querySelector("tbody");
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading…</td></tr>`;
+    const since = sinceIso();
+    let q = sb.from("v_login_log").select("*").order("occurred_at", { ascending: false }).limit(1000);
+    if (since) q = q.gte("occurred_at", since);
+    const { data, error } = await q;
+    if (error) { tbody.innerHTML = `<tr><td colspan="4" class="err">${esc(error.message)}</td></tr>`; return; }
+    tbody.innerHTML = (data || []).length
+      ? data.map(r => {
+          const outside = isOutsideCallingHours(r.occurred_at);
+          return `<tr>
+            <td class="${outside ? "err" : ""}">${esc(fmtIst(r.occurred_at))}${outside ? " · outside hours" : ""}</td>
+            <td>${esc(r.full_name || r.login_id)}</td>
+            <td class="${r.event === "login" ? "ok" : ""}">${esc(r.event)}</td>
+            <td class="muted">${esc(r.platform || "—")}</td>
+          </tr>`;
+        }).join("")
+      : `<tr><td colspan="4" class="muted">No login activity in this period.</td></tr>`;
+  }
 
   async function enterApp() {
     const { data: u } = await sb.auth.getUser();
