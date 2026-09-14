@@ -232,13 +232,16 @@
         What each agent's phone last reported on launch — this app is
         sideloaded, so this is the only way to know who has actually
         updated. Blank means that phone has never run a build new enough
-        to report it (v1.7.1 or later).
+        to report it (v1.7.1 or later). Device is reported from v1.8.2 —
+        an agent still on an older build shows blank here even once
+        their version updates, until they relaunch once more.
       </p>
       <div class="table-wrap">
         <table id="appVersionTable">
           <thead><tr>
             <th>Agent</th>
             <th>Version</th>
+            <th>Device</th>
             <th>Last reported</th>
           </tr></thead>
           <tbody></tbody>
@@ -1034,14 +1037,24 @@
         return best || v.app_version;
       }, null);
       versionTbody.innerHTML = versionRows.length
-        ? versionRows.map(v => `
+        ? versionRows.map(v => {
+            // A phone-sounding model is a real device; these substrings
+            // are what a desktop Android player reports instead — the
+            // question this column exists to answer at a glance.
+            const emulatorHints = ["bluestacks", "nox", "ldplayer", "memu",
+              "genymotion", "generic", "sdk_gphone", "android sdk built for"];
+            const looksLikeEmulator = !!v.device_model &&
+              emulatorHints.some(h => v.device_model.toLowerCase().includes(h));
+            return `
           <tr>
             <td>${esc(v.full_name)}${v.active ? "" : ' <span class="muted">(inactive)</span>'}</td>
             <td class="${v.app_version ? (v.app_version === newest ? "ok" : "err") : "muted"}">
               ${esc(v.app_version || "never reported")}</td>
+            <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="3" class="muted">No agents yet.</td></tr>`;
+          </tr>`;
+          }).join("")
+        : `<tr><td colspan="4" class="muted">No agents yet.</td></tr>`;
 
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
