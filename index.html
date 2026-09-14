@@ -248,6 +248,7 @@
             <th>Device</th>
             <th>Device ID</th>
             <th>Last reported</th>
+            <th>Status</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1075,15 +1076,18 @@
             const sharedDeviceId = !!v.device_id && deviceIdCounts[v.device_id] > 1;
             return `
           <tr>
-            <td>${esc(v.full_name)}${v.active ? "" : ' <span class="muted">(inactive)</span>'}</td>
+            <td>${esc(v.full_name)}</td>
             <td class="${v.app_version ? (v.app_version === newest ? "ok" : "err") : "muted"}">
               ${esc(v.app_version || "never reported")}</td>
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td class="${sharedDeviceId ? "err" : ""}" title="${sharedDeviceId ? "Same Device ID as another agent" : ""}">${esc(v.device_id || "—")}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
+            <td><button class="toggle-agent-active ${v.active ? "ok" : "err"}"
+                 data-agent-id="${esc(v.id)}" data-name="${esc(v.full_name)}" data-active="${v.active}">
+                 ${v.active ? "Active" : "Inactive"}</button></td>
           </tr>`;
           }).join("")
-        : `<tr><td colspan="5" class="muted">No agents yet.</td></tr>`;
+        : `<tr><td colspan="6" class="muted">No agents yet.</td></tr>`;
 
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
@@ -1162,6 +1166,42 @@
       alert("Could not delete batch: " + (err.message || err));
       btn.disabled = false;
       btn.textContent = "Delete";
+    }
+  });
+
+  // There's no real "delete agent" here — call_dispositions.agent_id has
+  // no ON DELETE clause, so Postgres refuses to remove a profile that has
+  // ever made a call, and that history is exactly what you'd want to keep
+  // anyway (see backend/19_deactivate_agent.sql). Deactivating is the
+  // actual mechanism: an inactive agent can no longer sign in and act
+  // (every RPC checks their own profile's `active`), and set_agent_active
+  // also frees their currently-open leads back to the pool so they don't
+  // sit stuck assigned to someone who's gone. Reversible from here too —
+  // a plain confirm() on deactivate is enough, no typed-name prompt.
+  $("appVersionTable").addEventListener("click", async (e) => {
+    const btn = e.target.closest(".toggle-agent-active");
+    if (!btn) return;
+    const agentId = btn.dataset.agentId;
+    const name = btn.dataset.name;
+    const nextActive = btn.dataset.active !== "true";
+
+    if (!nextActive && !confirm(
+      `Deactivate "${name}"? They will no longer be able to sign in or ` +
+      `place calls, and any lead currently assigned to them will be ` +
+      `released back to the pool for another agent to claim.`
+    )) return;
+
+    btn.disabled = true;
+    try {
+      const { error } = await sb.rpc("set_agent_active", {
+        p_agent_id: agentId,
+        p_active: nextActive
+      });
+      if (error) throw error;
+      loadDatabaseStats();
+    } catch (err) {
+      alert("Could not change agent status: " + (err.message || err));
+      btn.disabled = false;
     }
   });
 
