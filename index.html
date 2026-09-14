@@ -302,7 +302,7 @@
       <div class="table-wrap scroll-y">
         <table id="callbackTable">
           <thead><tr>
-            <th>Due</th><th>Name</th><th>Company</th><th>Agent</th>
+            <th>Due</th><th>Name</th><th id="cbMobileHead" class="hidden">Mobile</th><th>Company</th><th>Agent</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -314,7 +314,7 @@
       <div class="table-wrap scroll-y">
         <table id="recentTable">
           <thead><tr>
-            <th>When</th><th>Customer</th><th>Outcome</th><th>Agent</th><th>Remarks</th>
+            <th>When</th><th>Customer</th><th id="recentMobileHead" class="hidden">Mobile</th><th>Outcome</th><th>Agent</th><th>Remarks</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -502,6 +502,12 @@
     show($("createAgentCard"), isAdmin);
     show($("assignmentsCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
+    // Mobile numbers are only ever shown to the admin account (you) — a
+    // regular supervisor login sees everything else on this dashboard but
+    // not customer contact details, so the numbers aren't sitting exposed
+    // to anyone who isn't you.
+    show($("cbMobileHead"), isAdmin);
+    show($("recentMobileHead"), isAdmin);
     show($("login"), false);
     show($("app"), true);
     load();
@@ -523,8 +529,16 @@
     try {
       const since = sinceIso();
 
+      // Only the admin account's browser ever requests the raw numbers —
+      // a regular (non-admin) supervisor's session never receives them
+      // over the wire at all, not just hides them in the UI.
+      const leadCols = isAdmin ? "name, mobile, company" : "name, company";
+      const cbCols = isAdmin
+        ? "id, name, mobile, company, callback_at, assigned_to"
+        : "id, name, company, callback_at, assigned_to";
+
       let q = sb.from("call_dispositions")
-        .select("id, status, lead_quality, remarks, called_at, agent_id, leads(name, company)")
+        .select(`id, status, lead_quality, remarks, called_at, agent_id, leads(${leadCols})`)
         .order("called_at", { ascending: false })
         .limit(2000);
       if (since) q = q.gte("called_at", since);
@@ -533,7 +547,7 @@
         q,
         sb.from("profiles").select("id, full_name, role"),
         sb.from("leads")
-          .select("id, name, company, callback_at, assigned_to")
+          .select(cbCols)
           .not("callback_at", "is", null)
           .eq("is_closed", false)
           .order("callback_at", { ascending: true })
@@ -648,10 +662,11 @@
       return `<tr>
         <td class="${late ? "err" : ""}">${esc(fmtDT(due))}${late ? " · overdue" : ""}</td>
         <td>${esc(r.name)}</td>
+        ${isAdmin ? `<td>${esc(r.mobile || "—")}</td>` : ""}
         <td>${esc(r.company || "—")}</td>
         <td>${esc(names[r.assigned_to] || "—")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="4" class="muted">Nothing scheduled.</td></tr>`;
+    }).join("") : `<tr><td colspan="${isAdmin ? 5 : 4}" class="muted">Nothing scheduled.</td></tr>`;
   }
 
   function renderRecent(disp, names) {
@@ -663,11 +678,12 @@
       return `<tr>
         <td>${esc(fmtDT(new Date(d.called_at)))}</td>
         <td>${esc(lead.name || "—")}</td>
+        ${isAdmin ? `<td>${esc(lead.mobile || "—")}</td>` : ""}
         <td><span class="chip"><span class="dot" style="background:var(${m.varName})"></span>${esc(m.label + quality)}</span></td>
         <td>${esc(names[d.agent_id] || "—")}</td>
         <td style="white-space:normal;max-width:280px">${esc(d.remarks || "")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="5" class="muted">No calls in this period.</td></tr>`;
+    }).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="muted">No calls in this period.</td></tr>`;
   }
 
   function fmtDT(d) {
