@@ -227,7 +227,10 @@
         </table>
       </div>
 
-      <h2 style="margin-top:24px">App versions</h2>
+      <h2 style="margin-top:24px; display:flex; align-items:center; gap:12px">
+        App versions
+        <button id="openArchived" style="font-size:0.7em">Archived (<span id="archivedCount">0</span>)</button>
+      </h2>
       <p class="muted" style="margin-top:0">
         What each agent's phone last reported on launch — this app is
         sideloaded, so this is the only way to know who has actually
@@ -241,8 +244,9 @@
         on the same physical phone, not just the same phone model. Archive
         an agent who has left — they immediately lose the ability to sign
         in or place calls, and any lead still assigned to them goes back
-        to the pool for someone else to claim. Reversible any time from
-        this same button.
+        to the pool for someone else to claim. Archived agents move to
+        their own page (button above) instead of cluttering this list;
+        unarchiving from there is reversible any time.
       </p>
       <div class="table-wrap">
         <table id="appVersionTable">
@@ -387,6 +391,38 @@
   </main>
 </div>
 
+<!-- =============== ARCHIVED AGENTS (separate page) =============== -->
+<div id="archivedPage" class="hidden">
+  <header>
+    <h1>Archived agents</h1>
+    <span class="spacer"></span>
+    <button id="backFromArchived">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        Agents archived from the App versions page. They can no longer
+        sign in or place calls; any lead that was still assigned to them
+        was released back to the pool at the moment they were archived.
+        Unarchive to let them work again — they start claiming fresh
+        leads, nothing old is handed back automatically.
+      </p>
+      <div class="table-wrap">
+        <table id="archivedTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Version</th>
+            <th>Device</th>
+            <th>Last reported</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 (function () {
@@ -407,6 +443,7 @@
   let sb = null;
   let rangeDays = 0;           // 0 = today, -1 = all time
   let isAdmin = false;
+  let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
 
   const STATUS_META = [
     { wire: "LEAD",           label: "Lead",           varName: "--s-lead" },
@@ -1068,8 +1105,15 @@
       versionRows.forEach(v => {
         if (v.device_id) deviceIdCounts[v.device_id] = (deviceIdCounts[v.device_id] || 0) + 1;
       });
-      versionTbody.innerHTML = versionRows.length
-        ? versionRows.map(v => {
+      // Archived agents move off this table entirely and onto their own
+      // page (see #archivedPage / renderArchivedPage below) — a long
+      // roster of exited employees would otherwise bury the people
+      // actually working today.
+      const activeVersionRows = versionRows.filter(v => v.active);
+      archivedAgents = versionRows.filter(v => !v.active);
+      $("archivedCount").textContent = String(archivedAgents.length);
+      versionTbody.innerHTML = activeVersionRows.length
+        ? activeVersionRows.map(v => {
             // A phone-sounding model is a real device; these substrings
             // are what a desktop Android player reports instead — the
             // question this column exists to answer at a glance.
@@ -1086,12 +1130,12 @@
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td class="${sharedDeviceId ? "err" : ""}" title="${sharedDeviceId ? "Same Device ID as another agent" : ""}">${esc(v.device_id || "—")}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
-            <td><button class="toggle-agent-active ${v.active ? "" : "err"}"
-                 data-agent-id="${esc(v.id)}" data-name="${esc(v.full_name)}" data-active="${v.active}">
-                 ${v.active ? "Archive" : "Archived — undo"}</button></td>
+            <td><button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
+                 data-name="${esc(v.full_name)}" data-active="true">Archive</button></td>
           </tr>`;
           }).join("")
-        : `<tr><td colspan="6" class="muted">No agents yet.</td></tr>`;
+        : `<tr><td colspan="6" class="muted">No active agents.</td></tr>`;
+      if (!$("archivedPage").classList.contains("hidden")) renderArchivedPage();
 
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
@@ -1182,10 +1226,11 @@
   // RPC checks their own profile's `active`), and it frees their
   // currently-open leads back to the pool so they don't sit stuck
   // assigned to someone who's gone. Reversible from the same button — a
-  // plain confirm() is enough, no typed-name prompt.
-  $("appVersionTable").addEventListener("click", async (e) => {
-    const btn = e.target.closest(".toggle-agent-active");
-    if (!btn) return;
+  // plain confirm() is enough, no typed-name prompt. Shared between the
+  // App versions table (always archiving, data-active="true") and the
+  // Archived page (always unarchiving, data-active="false") so "Archive"
+  // and "Unarchive" go through one code path.
+  async function onToggleAgentActive(btn) {
     const agentId = btn.dataset.agentId;
     const name = btn.dataset.name;
     const nextActive = btn.dataset.active !== "true";
@@ -1208,7 +1253,42 @@
       alert("Could not change agent's archive status: " + (err.message || err));
       btn.disabled = false;
     }
+  }
+
+  $("appVersionTable").addEventListener("click", (e) => {
+    const btn = e.target.closest(".toggle-agent-active");
+    if (btn) onToggleAgentActive(btn);
   });
+
+  $("archivedTable").addEventListener("click", (e) => {
+    const btn = e.target.closest(".toggle-agent-active");
+    if (btn) onToggleAgentActive(btn);
+  });
+
+  function renderArchivedPage() {
+    const tbody = $("archivedTable").querySelector("tbody");
+    tbody.innerHTML = archivedAgents.length
+      ? archivedAgents.map(v => `
+        <tr>
+          <td>${esc(v.full_name)}</td>
+          <td class="muted">${esc(v.app_version || "never reported")}</td>
+          <td class="muted">${esc(v.device_model || "—")}</td>
+          <td class="muted">${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
+          <td><button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
+               data-name="${esc(v.full_name)}" data-active="false">Unarchive</button></td>
+        </tr>`).join("")
+      : `<tr><td colspan="5" class="muted">No archived agents.</td></tr>`;
+  }
+
+  $("openArchived").onclick = () => {
+    renderArchivedPage();
+    show($("app"), false);
+    show($("archivedPage"), true);
+  };
+  $("backFromArchived").onclick = () => {
+    show($("archivedPage"), false);
+    show($("app"), true);
+  };
 
   // Shown in place of a missing customer name. Deliberately obvious on the
   // agent's screen so they know to ask, rather than reading out a blank.
