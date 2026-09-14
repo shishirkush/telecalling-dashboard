@@ -244,6 +244,25 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <h2 style="margin-top:24px">Customer search activity</h2>
+      <p class="muted" style="margin-top:0">
+        Search is exact-match only (mobile or PAN) and every call is
+        logged — this is the abuse signal: far more searches than calls,
+        or a lot of zero-match searches, reads as guessing rather than
+        looking up a real callback. All-time.
+      </p>
+      <div class="table-wrap">
+        <table id="searchActivityTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th class="num">Searches</th>
+            <th class="num">Zero-match</th>
+            <th>Last search</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -926,8 +945,9 @@
     const tbody = $("batchTable").querySelector("tbody");
     const smsTbody = $("smsOutcomeTable").querySelector("tbody");
     const versionTbody = $("appVersionTable").querySelector("tbody");
+    const searchTbody = $("searchActivityTable").querySelector("tbody");
     try {
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes] = await Promise.all([
+      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, searchRes] = await Promise.all([
         sb.from("leads").select("id", { count: "exact", head: true }),
         sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
@@ -935,9 +955,10 @@
         sb.from("call_dispositions").select("id", { count: "exact", head: true }),
         sb.from("v_batch_summary").select("*"),
         sb.from("v_sms_outcomes").select("*"),
-        sb.from("v_app_versions").select("*")
+        sb.from("v_app_versions").select("*"),
+        sb.from("v_search_activity").select("*")
       ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes]) {
+      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, searchRes]) {
         if (r.error) throw r.error;
       }
 
@@ -1021,6 +1042,20 @@
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
           </tr>`).join("")
         : `<tr><td colspan="3" class="muted">No agents yet.</td></tr>`;
+
+      // A wall of zero-match rows, or a search count wildly out of line
+      // with how many calls that agent makes, is what guessing looks
+      // like — flag both in red so it isn't buried in an all-black table.
+      const searchRows = searchRes.data || [];
+      searchTbody.innerHTML = searchRows.length
+        ? searchRows.map(s => `
+          <tr>
+            <td>${esc(s.full_name)}</td>
+            <td class="num">${s.searches}</td>
+            <td class="num ${s.zero_match_searches > 0 ? "err" : ""}">${s.zero_match_searches}</td>
+            <td>${esc(fmtDT(new Date(s.last_search)))}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="muted">No searches yet.</td></tr>`;
     } catch (e) {
       tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
