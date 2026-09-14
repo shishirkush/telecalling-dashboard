@@ -302,7 +302,7 @@
       <div class="table-wrap scroll-y">
         <table id="callbackTable">
           <thead><tr>
-            <th>Due</th><th>Name</th><th>Mobile</th><th>Company</th><th>Agent</th>
+            <th>Due</th><th>Name</th><th>Company</th><th>Agent</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -314,7 +314,7 @@
       <div class="table-wrap scroll-y">
         <table id="recentTable">
           <thead><tr>
-            <th>When</th><th>Customer</th><th>Mobile</th><th>Outcome</th><th>Agent</th><th>Remarks</th>
+            <th>When</th><th>Customer</th><th>Outcome</th><th>Agent</th><th>Remarks</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -524,7 +524,7 @@
       const since = sinceIso();
 
       let q = sb.from("call_dispositions")
-        .select("id, status, lead_quality, remarks, called_at, agent_id, leads(name, mobile, company)")
+        .select("id, status, lead_quality, remarks, called_at, agent_id, leads(name, company)")
         .order("called_at", { ascending: false })
         .limit(2000);
       if (since) q = q.gte("called_at", since);
@@ -533,7 +533,7 @@
         q,
         sb.from("profiles").select("id, full_name, role"),
         sb.from("leads")
-          .select("id, name, mobile, company, callback_at, assigned_to")
+          .select("id, name, company, callback_at, assigned_to")
           .not("callback_at", "is", null)
           .eq("is_closed", false)
           .order("callback_at", { ascending: true })
@@ -648,11 +648,10 @@
       return `<tr>
         <td class="${late ? "err" : ""}">${esc(fmtDT(due))}${late ? " · overdue" : ""}</td>
         <td>${esc(r.name)}</td>
-        <td>${esc(r.mobile)}</td>
         <td>${esc(r.company || "—")}</td>
         <td>${esc(names[r.assigned_to] || "—")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="5" class="muted">Nothing scheduled.</td></tr>`;
+    }).join("") : `<tr><td colspan="4" class="muted">Nothing scheduled.</td></tr>`;
   }
 
   function renderRecent(disp, names) {
@@ -664,12 +663,11 @@
       return `<tr>
         <td>${esc(fmtDT(new Date(d.called_at)))}</td>
         <td>${esc(lead.name || "—")}</td>
-        <td>${esc(lead.mobile || "—")}</td>
         <td><span class="chip"><span class="dot" style="background:var(${m.varName})"></span>${esc(m.label + quality)}</span></td>
         <td>${esc(names[d.agent_id] || "—")}</td>
         <td style="white-space:normal;max-width:280px">${esc(d.remarks || "")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="6" class="muted">No calls in this period.</td></tr>`;
+    }).join("") : `<tr><td colspan="5" class="muted">No calls in this period.</td></tr>`;
   }
 
   function fmtDT(d) {
