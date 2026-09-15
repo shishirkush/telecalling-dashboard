@@ -1213,11 +1213,17 @@
       $("archivedCount").textContent = String(archivedAgents.length);
       versionTbody.innerHTML = activeVersionRows.length
         ? activeVersionRows.map(v => {
-            // A phone-sounding model is a real device; these substrings
-            // are what a desktop Android player reports instead — the
-            // question this column exists to answer at a glance.
+            // A phone-sounding model is a real phone; these substrings
+            // are what a desktop Android player reports instead, or a
+            // real but non-phone Android device — "floydwiz"/"primebook"
+            // added after an agent's WiFi-only Primebook laptop turned
+            // out to report FEATURE_TELEPHONY = true despite having no
+            // cellular modem, letting it past the app's own device
+            // check (see DeviceSupport.kt) — the question this column
+            // exists to answer at a glance either way.
             const emulatorHints = ["bluestacks", "nox", "ldplayer", "memu",
-              "genymotion", "generic", "sdk_gphone", "android sdk built for"];
+              "genymotion", "generic", "sdk_gphone", "android sdk built for",
+              "floydwiz", "primebook"];
             const looksLikeEmulator = !!v.device_model &&
               emulatorHints.some(h => v.device_model.toLowerCase().includes(h));
             const sharedDeviceId = !!v.device_id && deviceIdCounts[v.device_id] > 1;
