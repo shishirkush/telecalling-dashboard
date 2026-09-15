@@ -83,6 +83,23 @@
     font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
     color: var(--text-secondary); margin: 0 0 14px; font-weight: 600;
   }
+  /* Every h2 inside #app's main is made collapsible at runtime (see
+     initCollapsibleSections) — collapsed by default, its content
+     wrapped in the .collapsible-content sibling that immediately
+     follows it. The chevron is a ::before pseudo-element rather than
+     extra markup, so this works without touching any of the h2 text
+     already rendered server-side (e.g. the App versions heading's own
+     "Archived (N)" button stays exactly where it was). */
+  #app main h2 {
+    cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #app main h2::before {
+    content: "▸"; display: inline-block; font-size: 11px;
+    transition: transform .15s ease; color: var(--text-muted);
+  }
+  #app main h2.expanded::before { transform: rotate(90deg); }
+  .collapsible-content.hidden { display: none !important; }
 
   /* ---- stat tiles ---- */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 12px; margin-bottom: 18px; }
@@ -567,6 +584,40 @@
   const show = (el, on) => el.classList.toggle("hidden", !on);
   const esc = s => String(s ?? "").replace(/[&<>"']/g,
     c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+  // Every report/form on the main dashboard sits under an <h2>; this
+  // collapses all of them by default so the page isn't one long scroll
+  // of tables nobody's currently looking at, and expands whichever one
+  // is clicked. Runs once, synchronously — the script tag is at the end
+  // of body, so every h2 already exists in the DOM by the time this
+  // runs, collapsed or not (#app itself being hidden pre-login doesn't
+  // stop querySelectorAll from finding elements inside it). Dynamic,
+  // not hand-wrapped in markup: each h2's own following siblings up to
+  // the next h2 get moved into a wrapper div at runtime, so table IDs
+  // and existing render functions (getElementById-based) are completely
+  // unaffected by the extra nesting.
+  function initCollapsibleSections() {
+    document.querySelectorAll("#app main h2").forEach(h2 => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "collapsible-content hidden";
+      let next = h2.nextElementSibling;
+      while (next && next.tagName !== "H2") {
+        const toMove = next;
+        next = next.nextElementSibling;
+        wrapper.appendChild(toMove);
+      }
+      h2.insertAdjacentElement("afterend", wrapper);
+      h2.addEventListener("click", (e) => {
+        // A nested control (e.g. App versions' own "Archived (N)"
+        // button) should do its own thing, not also toggle the section.
+        if (e.target.closest("button")) return;
+        const opening = wrapper.classList.contains("hidden");
+        show(wrapper, opening);
+        h2.classList.toggle("expanded", opening);
+      });
+    });
+  }
+  initCollapsibleSections();
 
   // -----------------------------------------------------------------
   // Boot
