@@ -432,16 +432,27 @@
     <button id="backFromLoginActivity">← Back to dashboard</button>
   </header>
   <main>
+    <div class="filters" role="group" aria-label="Date range" id="loginActivityFilters">
+      <button data-days="0"  aria-pressed="false">Today</button>
+      <button data-days="7"  aria-pressed="true">Last 7 days</button>
+      <button data-days="30" aria-pressed="false">Last 30 days</button>
+      <button data-days="-1" aria-pressed="false">All time</button>
+    </div>
     <div class="card">
       <p class="muted" style="margin-top:0">
         Every sign-in and sign-out the app or web client got a chance to
-        report, for the date range selected on the main dashboard. This
-        is not a guarantee someone was signed out the whole time between
-        a login and its next logout — a killed app or a closed browser
-        tab never gets to report that. Calling hours are 9:00 AM–7:00 PM
-        IST; a login or logout outside that window is highlighted below
-        (leads themselves can only be claimed inside it, enforced
-        server-side in claim_next_lead()).
+        report, for the date range selected above — its own filter,
+        independent of the main dashboard's, defaulting to a week rather
+        than today only. A login is logged every time the app becomes
+        active with a valid session, not only on typing a password —
+        most agents sign in once and stay signed in for days, so scoping
+        it to that alone would show almost nothing. This is still not a
+        guarantee someone was signed out the whole time between a login
+        and its next logout — a killed app or a closed browser tab never
+        gets to report that. Calling hours are 9:00 AM–7:00 PM IST; a
+        login or logout outside that window is highlighted below (leads
+        themselves can only be claimed inside it, enforced server-side
+        in claim_next_lead()).
       </p>
       <div class="table-wrap scroll-y">
         <table id="loginActivityTable">
@@ -477,6 +488,11 @@
 
   let sb = null;
   let rangeDays = 0;           // 0 = today, -1 = all time
+  // Independent of rangeDays above, and defaults wider — an audit-log
+  // page like this one is naturally something to review over at least a
+  // week by default, unlike the main dashboard's KPI tiles where
+  // "Today" is the sensible default.
+  let loginActivityRangeDays = 7;
   let isAdmin = false;
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
 
@@ -547,16 +563,17 @@
   $("refresh").onclick = () => {
     load();
     if (isAdmin) loadDatabaseStats();
-    if (!$("loginActivityPage").classList.contains("hidden")) loadLoginActivity();
   };
 
-  document.querySelectorAll(".filters button").forEach(b => {
+  // Scoped to #app's own filter row only (:scope) — loginActivityFilters
+  // below has an identical ".filters button" structure but its own
+  // independent range, not this page's rangeDays.
+  document.querySelectorAll("#app .filters button").forEach(b => {
     b.onclick = () => {
-      document.querySelectorAll(".filters button")
+      document.querySelectorAll("#app .filters button")
         .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
       rangeDays = Number(b.dataset.days);
       load();
-      if (!$("loginActivityPage").classList.contains("hidden")) loadLoginActivity();
     };
   });
 
@@ -574,6 +591,14 @@
     show($("loginActivityPage"), false);
     show($("app"), true);
   };
+  document.querySelectorAll("#loginActivityFilters button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#loginActivityFilters button")
+        .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      loginActivityRangeDays = Number(b.dataset.days);
+      loadLoginActivity();
+    };
+  });
 
   // 9 AM–7 PM IST is the same window claim_next_lead() enforces server-
   // side (backend/21_login_log_and_calling_hours.sql) — flagging it here
@@ -601,7 +626,7 @@
   async function loadLoginActivity() {
     const tbody = $("loginActivityTable").querySelector("tbody");
     tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading…</td></tr>`;
-    const since = sinceIso();
+    const since = isoSince(loginActivityRangeDays);
     let q = sb.from("v_login_log").select("*").order("occurred_at", { ascending: false }).limit(1000);
     if (since) q = q.gte("occurred_at", since);
     const { data, error } = await q;
@@ -663,13 +688,14 @@
   // -----------------------------------------------------------------
   // Data
   // -----------------------------------------------------------------
-  function sinceIso() {
-    if (rangeDays < 0) return null;
+  function isoSince(days) {
+    if (days < 0) return null;
     const d = new Date();
-    if (rangeDays === 0) d.setHours(0, 0, 0, 0);
-    else d.setDate(d.getDate() - rangeDays);
+    if (days === 0) d.setHours(0, 0, 0, 0);
+    else d.setDate(d.getDate() - days);
     return d.toISOString();
   }
+  function sinceIso() { return isoSince(rangeDays); }
 
   async function load() {
     try {
