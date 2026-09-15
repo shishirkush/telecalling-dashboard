@@ -238,9 +238,10 @@
         a denied permission or a carrier failure on their own phone.
         All-time, every agent.
       </p>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-y">
         <table id="smsOutcomeTable">
           <thead><tr>
+            <th>Agent</th>
             <th>Outcome</th>
             <th class="num">Count</th>
             <th>Most recent</th>
@@ -1414,18 +1415,23 @@
 
       // "sent" is the only outcome that means the text actually went out;
       // everything else — a denied permission, no carrier service, a
-      // radio-off phone — is a real device the Apply Card message never
-      // reached. Sorted by count already (v_sms_outcomes), so the biggest
-      // failure mode is the top non-"sent" row.
+      // radio-off phone, an app exception — is a real device the Apply
+      // Card message never reached. Broken down per agent (migration 24)
+      // rather than totalled across everyone: one agent stuck on
+      // permission_denied used to be invisible in a fleet-wide total
+      // that also included everyone else's successful sends. Sorted by
+      // agent then count already (v_sms_outcomes), so each agent's
+      // biggest failure mode is the top row under their name.
       const smsRows = smsRes.data || [];
       smsTbody.innerHTML = smsRows.length
         ? smsRows.map(o => `
           <tr>
+            <td>${esc(o.full_name || o.login_id)}</td>
             <td class="${o.outcome === "sent" ? "ok" : "err"}">${esc(o.outcome)}</td>
             <td class="num">${o.total}</td>
             <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
           </tr>`).join("")
-        : `<tr><td colspan="3" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
+        : `<tr><td colspan="4" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
 
       // Green only for whichever version is the newest ANY agent has
       // actually reported — there's no fixed "latest" constant to compare
