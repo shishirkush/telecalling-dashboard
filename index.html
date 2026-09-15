@@ -430,6 +430,14 @@
         Unarchive to let them work again — they start claiming fresh
         leads, nothing old is handed back automatically.
       </p>
+      <p class="muted">
+        Handing an archived seat to a new hire? First use
+        <strong>Reassign history</strong> to move the outgoing agent's past
+        calls, SMS and login records onto someone still active, then use
+        <strong>Rename</strong> to give the seat the new hire's name, login
+        ID and (optionally) a new password — otherwise the new hire's name
+        would show up against the previous agent's entire call history.
+      </p>
       <div class="table-wrap">
         <table id="archivedTable">
           <thead><tr>
@@ -557,6 +565,8 @@
   let loginActivityRangeDays = 7;
   let isAdmin = false;
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
+  let activeAgents = [];   // same shape, active === true — reassign-history target list
+  let archivedEditMode = null; // {id, mode: "rename" | "reassign"} | null
 
   const STATUS_META = [
     { wire: "LEAD",           label: "Lead",           varName: "--s-lead" },
@@ -1462,6 +1472,7 @@
       // roster of exited employees would otherwise bury the people
       // actually working today.
       const activeVersionRows = versionRows.filter(v => v.active);
+      activeAgents = activeVersionRows;
       archivedAgents = versionRows.filter(v => !v.active);
       $("archivedCount").textContent = String(archivedAgents.length);
       versionTbody.innerHTML = activeVersionRows.length
@@ -1624,8 +1635,102 @@
     const toggle = e.target.closest(".toggle-agent-active");
     if (toggle) { onToggleAgentActive(toggle); return; }
     const link = e.target.closest(".link-btn");
-    if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
+    if (link) { openAgentReport(link.dataset.agentId, link.dataset.agentName); return; }
+    const renameBtn = e.target.closest(".rename-agent-btn");
+    if (renameBtn) { archivedEditMode = { id: renameBtn.dataset.agentId, mode: "rename" }; renderArchivedPage(); return; }
+    const reassignBtn = e.target.closest(".reassign-agent-btn");
+    if (reassignBtn) { archivedEditMode = { id: reassignBtn.dataset.agentId, mode: "reassign" }; renderArchivedPage(); return; }
+    if (e.target.id === "renameCancelBtn" || e.target.id === "reassignCancelBtn") {
+      archivedEditMode = null; renderArchivedPage(); return;
+    }
+    if (e.target.id === "renameSaveBtn") { onRenameAgent(e.target.dataset.agentId); return; }
+    if (e.target.id === "reassignSaveBtn") {
+      onReassignAgent(e.target.dataset.agentId, e.target.dataset.agentName); return;
+    }
   });
+
+  // -----------------------------------------------------------------
+  // Rename an archived agent (name + login ID + optional new password)
+  // -----------------------------------------------------------------
+  // Restricted to archived agents server-side too (rename-agent Edge
+  // Function) — renaming someone still signed in would invalidate the
+  // login ID mid-shift. login_id doubles as the synthetic auth email's
+  // local part, so this has to go through an Edge Function holding
+  // service_role rather than a plain profiles UPDATE — same reason
+  // "Create agent" below does.
+  async function onRenameAgent(agentId) {
+    const fullName = $("renameFullName").value.trim();
+    const loginId = $("renameLoginId").value.trim();
+    const password = $("renamePassword").value;
+    const statusEl = $("renameStatus");
+    const saveBtn = $("renameSaveBtn");
+
+    if (!fullName || !loginId) {
+      statusEl.innerHTML = '<span class="err">Enter a name and a login ID.</span>';
+      return;
+    }
+
+    saveBtn.disabled = true;
+    statusEl.textContent = "Saving…";
+    try {
+      const { data: sessionData } = await sb.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Your session has expired. Sign in again.");
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/rename-agent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ agent_id: agentId, full_name: fullName, login_id: loginId, password })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status}).`);
+
+      archivedEditMode = null;
+      loadDatabaseStats();
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+      saveBtn.disabled = false;
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // Reassign an archived agent's past call/SMS/login history to
+  // someone still active — see backend/25_reassign_archived_agent_history.sql
+  // -----------------------------------------------------------------
+  async function onReassignAgent(fromId, fromName) {
+    const select = $("reassignTarget");
+    const toId = select.value;
+    const statusEl = $("reassignStatus");
+    const saveBtn = $("reassignSaveBtn");
+
+    if (!toId) {
+      statusEl.innerHTML = '<span class="err">Pick an agent to move the history to.</span>';
+      return;
+    }
+    const toName = select.options[select.selectedIndex].dataset.name || toId;
+    if (!confirm(`Move all of "${fromName}"'s past calls, SMS and login records to "${toName}"? This cannot be undone.`)) return;
+
+    saveBtn.disabled = true;
+    statusEl.textContent = "Reassigning…";
+    try {
+      const { data, error } = await sb.rpc("reassign_agent_history", {
+        p_from_agent_id: fromId,
+        p_to_agent_id: toId
+      });
+      if (error) throw error;
+      const total = Object.values(data || {}).reduce((a, b) => a + (b || 0), 0);
+      archivedEditMode = null;
+      await loadDatabaseStats();
+      alert(`Moved ${total} record(s) from "${fromName}" to "${toName}".`);
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+      saveBtn.disabled = false;
+    }
+  }
 
   $("agentTable").addEventListener("click", (e) => {
     const link = e.target.closest(".link-btn");
@@ -1635,15 +1740,74 @@
   function renderArchivedPage() {
     const tbody = $("archivedTable").querySelector("tbody");
     tbody.innerHTML = archivedAgents.length
-      ? archivedAgents.map(v => `
+      ? archivedAgents.map(v => {
+          const editing = archivedEditMode && archivedEditMode.id === v.id ? archivedEditMode.mode : null;
+          const row = `
         <tr>
           <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
           <td class="muted">${esc(v.app_version || "never reported")}</td>
           <td class="muted">${esc(v.device_model || "—")}</td>
           <td class="muted">${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
-          <td><button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
-               data-name="${esc(v.full_name)}" data-active="false">Unarchive</button></td>
-        </tr>`).join("")
+          <td style="display:flex; gap:6px; flex-wrap:wrap">
+            <button class="rename-agent-btn" data-agent-id="${esc(v.id)}">Rename</button>
+            <button class="reassign-agent-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Reassign history</button>
+            <button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
+                 data-name="${esc(v.full_name)}" data-active="false">Unarchive</button>
+          </td>
+        </tr>`;
+
+          const renameForm = editing === "rename" ? `
+        <tr>
+          <td colspan="5">
+            <div class="card" style="margin:8px 0">
+              <strong>Rename "${esc(v.full_name)}"</strong>
+              <p class="muted" style="margin:4px 0 8px">
+                Changes their name and login ID everywhere, including how
+                they sign in. Leave the password blank to keep their
+                current one — only set a new one if you're handing this
+                seat to someone new.
+              </p>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end">
+                <label>Full name<br><input id="renameFullName" value="${esc(v.full_name || "")}"></label>
+                <label>Login ID<br><input id="renameLoginId" value="${esc(v.login_id || "")}"></label>
+                <label>New password (optional)<br><input id="renamePassword" type="password" placeholder="leave blank to keep current"></label>
+                <button id="renameSaveBtn" data-agent-id="${esc(v.id)}">Save</button>
+                <button id="renameCancelBtn">Cancel</button>
+              </div>
+              <div id="renameStatus" class="muted" style="margin-top:8px"></div>
+            </div>
+          </td>
+        </tr>` : "";
+
+          const reassignForm = editing === "reassign" ? `
+        <tr>
+          <td colspan="5">
+            <div class="card" style="margin:8px 0">
+              <strong>Reassign "${esc(v.full_name)}"'s call history</strong>
+              <p class="muted" style="margin:4px 0 8px">
+                Moves every call, SMS and login record currently
+                attributed to "${esc(v.full_name)}" onto the agent you
+                pick below. Their open leads were already released back
+                to the pool when they were archived — this only affects
+                historical records.
+              </p>
+              <div style="display:flex; gap:8px; align-items:end">
+                <label>Move history to<br>
+                  <select id="reassignTarget">
+                    <option value="">Select an active agent…</option>
+                    ${activeAgents.map(a => `<option value="${esc(a.id)}" data-name="${esc(a.full_name)}">${esc(a.full_name)} (${esc(a.login_id || "")})</option>`).join("")}
+                  </select>
+                </label>
+                <button id="reassignSaveBtn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Reassign</button>
+                <button id="reassignCancelBtn">Cancel</button>
+              </div>
+              <div id="reassignStatus" class="muted" style="margin-top:8px"></div>
+            </div>
+          </td>
+        </tr>` : "";
+
+          return row + renameForm + reassignForm;
+        }).join("")
       : `<tr><td colspan="5" class="muted">No archived agents.</td></tr>`;
   }
 
