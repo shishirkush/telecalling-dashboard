@@ -130,6 +130,10 @@
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 500; }
   button.primary:disabled { opacity: .55; cursor: default; }
+  button.link-btn {
+    background: none; border: none; padding: 0; color: var(--accent);
+    font: inherit; text-decoration: underline; text-underline-offset: 2px;
+  }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
   .filters button { border-radius: 999px; padding: 6px 14px; font-size: 13px; }
   .filters button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
@@ -469,6 +473,46 @@
   </main>
 </div>
 
+<!-- =============== AGENT DAILY REPORT (separate page) =============== -->
+<div id="agentReportPage" class="hidden">
+  <header>
+    <h1 id="agentReportTitle">Agent report</h1>
+    <span class="spacer"></span>
+    <input type="date" id="agentReportDate" style="max-width:160px">
+    <button id="backFromAgentReport">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="tiles" id="agentReportTiles"></div>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        Every login/logout, call attempt (the instant "Call" is tapped —
+        backend/22_require_call_before_disposition.sql) and saved outcome
+        for this agent on the selected day (India time), merged into one
+        timeline. <strong>Gap</strong> is the time between tapping Call
+        and saving that lead's outcome — the real signal here: a call
+        genuinely worked (a conversation, or several re-dials) varies a
+        lot call to call, while a gap that's <em>always</em> close to the
+        30-second floor (backend/23_minimum_call_dwell_time.sql) across
+        many leads in a row is what tapping Call, hanging up immediately,
+        and waiting out the timer looks like — flagged in red below at
+        under 40s, a 10-second margin past the floor itself.
+      </p>
+      <div class="table-wrap scroll-y">
+        <table id="agentReportTable">
+          <thead><tr>
+            <th>Time (IST)</th>
+            <th>Event</th>
+            <th>Lead</th>
+            <th>Detail</th>
+            <th>Gap</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 (function () {
@@ -644,6 +688,132 @@
       : `<tr><td colspan="4" class="muted">No login activity in this period.</td></tr>`;
   }
 
+  // -----------------------------------------------------------------
+  // Agent daily report — a per-agent, per-day timeline (login/logout,
+  // call attempts, saved outcomes) for checking whether an agent is
+  // actually working the queue. Reached by clicking an agent's name in
+  // App versions or Agent performance.
+  // -----------------------------------------------------------------
+  let agentReportId = null;
+  let agentReportName = "";
+
+  function istTodayString() {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+  }
+  // An IST calendar date, as the UTC instant range it actually spans —
+  // India has one fixed UTC+5:30 offset with no DST, so this is a
+  // simple literal-offset construction, no timezone database needed.
+  function istDayRangeUtc(dateStr) {
+    const start = new Date(`${dateStr}T00:00:00+05:30`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { startIso: start.toISOString(), endIso: end.toISOString() };
+  }
+  function fmtIstTime(iso) {
+    return new Date(iso).toLocaleTimeString("en-IN", {
+      timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true
+    });
+  }
+  function fmtGap(ms) {
+    if (ms == null) return "—";
+    const s = Math.round(ms / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  function openAgentReport(agentId, agentName) {
+    agentReportId = agentId;
+    agentReportName = agentName;
+    $("agentReportTitle").textContent = `Agent report — ${agentName}`;
+    $("agentReportDate").value = istTodayString();
+    show($("app"), false);
+    show($("archivedPage"), false);
+    show($("loginActivityPage"), false);
+    show($("agentReportPage"), true);
+    loadAgentReport();
+  }
+  $("backFromAgentReport").onclick = () => {
+    show($("agentReportPage"), false);
+    show($("app"), true);
+  };
+  $("agentReportDate").onchange = loadAgentReport;
+
+  async function loadAgentReport() {
+    if (!agentReportId) return;
+    const tbody = $("agentReportTable").querySelector("tbody");
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
+    $("agentReportTiles").innerHTML = "";
+
+    const { startIso, endIso } = istDayRangeUtc($("agentReportDate").value || istTodayString());
+
+    const [loginRes, attemptRes, dispRes] = await Promise.all([
+      sb.from("login_log").select("event, platform, occurred_at")
+        .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
+      sb.from("call_attempts").select("lead_id, attempted_at, leads(name)")
+        .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
+      sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
+        .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
+    ]);
+    const err = loginRes.error || attemptRes.error || dispRes.error;
+    if (err) { tbody.innerHTML = `<tr><td colspan="5" class="err">${esc(err.message)}</td></tr>`; return; }
+
+    const logins = loginRes.data || [];
+    const attempts = attemptRes.data || [];
+    const dispositions = dispRes.data || [];
+
+    // Latest attempt at or before this disposition's save, for the same
+    // lead — the one that actually satisfied save_disposition()'s gate.
+    // Not a perfect reconstruction of the server's exact query (a lead
+    // re-attempted across multiple callbacks in one day could have more
+    // than one candidate), but right in the overwhelmingly common case
+    // of one attempt per save, which is what this view exists to check.
+    const attemptsByLead = {};
+    attempts.forEach(a => (attemptsByLead[a.lead_id] = attemptsByLead[a.lead_id] || []).push(a));
+    Object.values(attemptsByLead).forEach(list => list.sort((a, b) => new Date(a.attempted_at) - new Date(b.attempted_at)));
+
+    const rows = [];
+    logins.forEach(l => rows.push({
+      time: l.occurred_at, type: l.event, lead: "", detail: l.platform || "—", gapMs: null
+    }));
+    attempts.forEach(a => rows.push({
+      time: a.attempted_at, type: "call", lead: a.leads?.name || "—", detail: "Tapped Call", gapMs: null
+    }));
+    let fastGapCount = 0;
+    dispositions.forEach(d => {
+      const meta = STATUS_META.find(s => s.wire === d.status);
+      const candidates = (attemptsByLead[d.lead_id] || []).filter(a => new Date(a.attempted_at) <= new Date(d.called_at));
+      const matched = candidates.length ? candidates[candidates.length - 1] : null;
+      const gapMs = matched ? (new Date(d.called_at) - new Date(matched.attempted_at)) : null;
+      if (gapMs != null && gapMs < 40000) fastGapCount++;
+      const mobileNote = isAdmin && d.leads?.mobile ? ` (${esc(d.leads.mobile)})` : "";
+      rows.push({
+        time: d.called_at, type: "save", lead: (d.leads?.name || "—") + mobileNote,
+        detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs
+      });
+    });
+    rows.sort((a, b) => new Date(a.time) - new Date(b.time));
+
+    $("agentReportTiles").innerHTML = `
+      <div class="tile"><div class="label">Calls saved</div><div class="value">${dispositions.length}</div></div>
+      <div class="tile"><div class="label">Call attempts</div><div class="value">${attempts.length}</div></div>
+      <div class="tile"><div class="label">Outside calling hours</div>
+        <div class="value">${rows.filter(r => isOutsideCallingHours(r.time)).length}</div></div>
+      <div class="tile"><div class="label">Gap under 40s</div>
+        <div class="value ${fastGapCount > 0 ? "err" : ""}">${fastGapCount}</div>
+        <div class="sub">of ${dispositions.length} saves</div></div>`;
+
+    tbody.innerHTML = rows.length ? rows.map(r => {
+      const outside = isOutsideCallingHours(r.time);
+      const fastGap = r.gapMs != null && r.gapMs < 40000;
+      const typeLabel = { login: "Login", logout: "Logout", call: "Call attempt", save: "Saved outcome" }[r.type];
+      return `<tr>
+        <td class="${outside ? "err" : ""}">${esc(fmtIstTime(r.time))}${outside ? " · outside hours" : ""}</td>
+        <td class="${r.type === "login" ? "ok" : r.type === "logout" ? "err" : ""}">${esc(typeLabel)}</td>
+        <td>${esc(r.lead)}</td>
+        <td class="muted">${esc(r.detail)}</td>
+        <td class="${fastGap ? "err" : ""}">${fmtGap(r.gapMs)}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="5" class="muted">No activity on this day.</td></tr>`;
+  }
+
   async function enterApp() {
     const { data: u } = await sb.auth.getUser();
     const uid = u && u.user ? u.user.id : null;
@@ -797,7 +967,7 @@
   function renderAgents(disp, profs, names) {
     const rows = {};
     profs.filter(p => p.role === "agent").forEach(p => {
-      rows[p.id] = { name: p.full_name || "—", total: 0,
+      rows[p.id] = { id: p.id, name: p.full_name || "—", total: 0,
                      LEAD: 0, CALL_LATER: 0, NOT_INTERESTED: 0,
                      WRONG_NUMBER: 0, SWITCHED_OFF: 0, NO_ANSWER: 0 };
     });
@@ -812,7 +982,7 @@
     const tbody = $("agentTable").querySelector("tbody");
     tbody.innerHTML = list.length ? list.map(r => `
       <tr>
-        <td>${esc(r.name)}</td>
+        <td><button class="link-btn" data-agent-id="${esc(r.id)}" data-agent-name="${esc(r.name)}">${esc(r.name)}</button></td>
         <td class="num">${r.total}</td>
         <td class="num">${r.LEAD}</td>
         <td class="num">${r.total ? (100 * r.LEAD / r.total).toFixed(1) : "0.0"}</td>
@@ -1255,7 +1425,7 @@
             const sharedDeviceId = !!v.device_id && deviceIdCounts[v.device_id] > 1;
             return `
           <tr>
-            <td>${esc(v.full_name)}</td>
+            <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
             <td class="${v.app_version ? (v.app_version === newest ? "ok" : "err") : "muted"}">
               ${esc(v.app_version || "never reported")}</td>
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
@@ -1387,13 +1557,22 @@
   }
 
   $("appVersionTable").addEventListener("click", (e) => {
-    const btn = e.target.closest(".toggle-agent-active");
-    if (btn) onToggleAgentActive(btn);
+    const toggle = e.target.closest(".toggle-agent-active");
+    if (toggle) { onToggleAgentActive(toggle); return; }
+    const link = e.target.closest(".link-btn");
+    if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
   });
 
   $("archivedTable").addEventListener("click", (e) => {
-    const btn = e.target.closest(".toggle-agent-active");
-    if (btn) onToggleAgentActive(btn);
+    const toggle = e.target.closest(".toggle-agent-active");
+    if (toggle) { onToggleAgentActive(toggle); return; }
+    const link = e.target.closest(".link-btn");
+    if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
+  });
+
+  $("agentTable").addEventListener("click", (e) => {
+    const link = e.target.closest(".link-btn");
+    if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
   });
 
   function renderArchivedPage() {
@@ -1401,7 +1580,7 @@
     tbody.innerHTML = archivedAgents.length
       ? archivedAgents.map(v => `
         <tr>
-          <td>${esc(v.full_name)}</td>
+          <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
           <td class="muted">${esc(v.app_version || "never reported")}</td>
           <td class="muted">${esc(v.device_model || "—")}</td>
           <td class="muted">${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
