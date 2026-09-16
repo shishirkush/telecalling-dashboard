@@ -285,6 +285,27 @@
         </table>
       </div>
 
+      <h2 style="margin-top:24px">Agent contact numbers</h2>
+      <p class="muted" style="margin-top:0">
+        Each agent's own calling number, self-reported from the app —
+        Android/the browser can't reliably read a SIM's own number, so
+        this is a fact the agent enters once instead of a per-call
+        auto-detect. Use it to reach an agent directly, or to trace a
+        call back to them if a customer complains about a specific
+        number. "Not set yet" means that agent hasn't been prompted for
+        it yet (before v1.10.1 / v1.10.1-web) or dismissed the prompt.
+      </p>
+      <div class="table-wrap">
+        <table id="agentContactTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Login ID</th>
+            <th>Calling number</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
       <h2 style="margin-top:24px">Customer search activity</h2>
       <p class="muted" style="margin-top:0">
         Search is exact-match only (mobile or PAN) and every call is
@@ -1366,9 +1387,10 @@
     const tbody = $("batchTable").querySelector("tbody");
     const smsTbody = $("smsOutcomeTable").querySelector("tbody");
     const versionTbody = $("appVersionTable").querySelector("tbody");
+    const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
     try {
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, searchRes] = await Promise.all([
+      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes] = await Promise.all([
         sb.from("leads").select("id", { count: "exact", head: true }),
         sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
         sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
@@ -1377,9 +1399,10 @@
         sb.from("v_batch_summary").select("*"),
         sb.from("v_sms_outcomes").select("*"),
         sb.from("v_app_versions").select("*"),
+        sb.from("v_agent_contacts").select("*"),
         sb.from("v_search_activity").select("*")
       ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, searchRes]) {
+      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes]) {
         if (r.error) throw r.error;
       }
 
@@ -1505,6 +1528,16 @@
           }).join("")
         : `<tr><td colspan="6" class="muted">No active agents.</td></tr>`;
       if (!$("archivedPage").classList.contains("hidden")) renderArchivedPage();
+
+      const contactRows = (contactRes.data || []).filter(c => c.active);
+      contactTbody.innerHTML = contactRows.length
+        ? contactRows.map(c => `
+          <tr>
+            <td>${esc(c.full_name)}</td>
+            <td class="muted">${esc(c.login_id || "—")}</td>
+            <td class="${c.contact_number ? "" : "muted"}">${esc(c.contact_number || "Not set yet")}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="3" class="muted">No active agents.</td></tr>`;
 
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
