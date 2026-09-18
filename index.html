@@ -1061,7 +1061,9 @@
       if (d.status in r) r[d.status]++;
     });
 
-    const list = Object.values(rows).sort((a, b) => b.LEAD - a.LEAD || b.total - a.total);
+    const list = Object.values(rows)
+      .filter(r => r.total > 0)
+      .sort((a, b) => b.LEAD - a.LEAD || b.total - a.total);
     const tbody = $("agentTable").querySelector("tbody");
     tbody.innerHTML = list.length ? list.map(r => `
       <tr>
@@ -1075,7 +1077,7 @@
         <td class="num">${r.SWITCHED_OFF}</td>
         <td class="num">${r.NO_ANSWER}</td>
       </tr>`).join("")
-      : `<tr><td colspan="9" class="muted">No agents yet.</td></tr>`;
+      : `<tr><td colspan="9" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
