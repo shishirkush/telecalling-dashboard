@@ -110,6 +110,15 @@
   .tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
   .tile .value { font-size: 30px; font-weight: 600; line-height: 1.1; }
   .tile .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .tile[data-tile] { cursor: pointer; }
+  .tile[data-tile]:hover { border-color: var(--text-muted); }
+
+  /* Briefly highlighted after a tile click jumps a collapsed section open. */
+  @keyframes sectionFlash {
+    0%   { background: var(--grid); }
+    100% { background: transparent; }
+  }
+  #app main h2.flash { animation: sectionFlash 1.2s ease-out; }
 
   /* ---- bar chart ---- */
   .bar-row { display: grid; grid-template-columns: 132px 1fr 74px; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -356,7 +365,7 @@
     </div>
 
     <div class="card">
-      <h2>Callbacks due</h2>
+      <h2 id="callbacksHeading">Callbacks due</h2>
       <div class="table-wrap scroll-y">
         <table id="callbackTable">
           <thead><tr>
@@ -368,7 +377,11 @@
     </div>
 
     <div class="card">
-      <h2>Recent calls</h2>
+      <h2 id="recentCallsHeading">Recent calls
+        <span id="recentFilterChip" class="chip hidden">Leads only
+          <button id="clearRecentFilter" type="button">×</button>
+        </span>
+      </h2>
       <div class="table-wrap scroll-y">
         <table id="recentTable">
           <thead><tr>
@@ -650,6 +663,44 @@
     });
   }
   initCollapsibleSections();
+
+  // Opens the collapsible section a given h2 heads (initCollapsibleSections
+  // already wrapped its content in the .collapsible-content sibling right
+  // after it), scrolls it into view, and briefly flashes it so a section
+  // that was already open still gives some feedback on click.
+  function openSection(h2) {
+    if (!h2) return;
+    const wrapper = h2.nextElementSibling;
+    if (wrapper && wrapper.classList.contains("hidden")) {
+      show(wrapper, true);
+      h2.classList.add("expanded");
+    }
+    h2.scrollIntoView({ behavior: "smooth", block: "start" });
+    h2.classList.remove("flash");
+    void h2.offsetWidth; // restart the animation if it's already mid-flash
+    h2.classList.add("flash");
+  }
+
+  // Leads generated -> Recent calls filtered to LEAD only.
+  // Callbacks pending -> Callbacks due (same data, no filtering needed).
+  $("tiles").addEventListener("click", (e) => {
+    const tile = e.target.closest("[data-tile]");
+    if (!tile) return;
+    if (tile.dataset.tile === "leads") {
+      applyRecentFilter("LEAD");
+      openSection($("recentCallsHeading"));
+    } else if (tile.dataset.tile === "callbacks") {
+      openSection($("callbacksHeading"));
+    }
+  });
+  $("tiles").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target.closest("[data-tile]")) { e.preventDefault(); e.target.click(); }
+  });
+  $("clearRecentFilter").addEventListener("click", (e) => {
+    e.stopPropagation(); // don't also collapse the section this button sits in
+    applyRecentFilter(null);
+  });
 
   // -----------------------------------------------------------------
   // Boot
@@ -1009,13 +1060,15 @@
       <div class="tile"><div class="label">Calls made</div>
         <div class="value">${total}</div>
         <div class="sub">${rangeLabel()}</div></div>
-      <div class="tile"><div class="label">Leads generated</div>
+      <div class="tile" data-tile="leads" role="button" tabindex="0" title="Show these calls in Recent calls">
+        <div class="label">Leads generated</div>
         <div class="value">${leads}</div>
         <div class="sub">${disp.filter(d => d.lead_quality === "HOT").length} hot</div></div>
       <div class="tile"><div class="label">Conversion</div>
         <div class="value">${conv}%</div>
         <div class="sub">leads ÷ calls</div></div>
-      <div class="tile"><div class="label">Callbacks pending</div>
+      <div class="tile" data-tile="callbacks" role="button" tabindex="0" title="Show the Callbacks due list">
+        <div class="label">Callbacks pending</div>
         <div class="value">${callbacks.length}</div>
         <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>`;
   }
@@ -1096,9 +1149,21 @@
     }).join("") : `<tr><td colspan="${isAdmin ? 5 : 4}" class="muted">Nothing scheduled.</td></tr>`;
   }
 
+  // recentFilter narrows Recent calls to one status (currently only ever
+  // "LEAD", set by clicking the Leads generated tile) without a fresh
+  // fetch — lastRecentDisp/lastRecentNames cache what load() last saw so
+  // applyRecentFilter() can just re-render from that.
+  let recentFilter = null;
+  let lastRecentDisp = [];
+  let lastRecentNames = {};
+
   function renderRecent(disp, names) {
+    lastRecentDisp = disp;
+    lastRecentNames = names;
+    const rows = recentFilter ? disp.filter(d => d.status === recentFilter) : disp;
+    show($("recentFilterChip"), !!recentFilter);
     const tbody = $("recentTable").querySelector("tbody");
-    tbody.innerHTML = disp.length ? disp.slice(0, 100).map(d => {
+    tbody.innerHTML = rows.length ? rows.slice(0, 100).map(d => {
       const m = metaFor(d.status);
       const lead = d.leads || {};
       const quality = d.lead_quality ? ` (${d.lead_quality.toLowerCase()})` : "";
@@ -1110,7 +1175,12 @@
         <td>${esc(names[d.agent_id] || "—")}</td>
         <td style="white-space:normal;max-width:280px">${esc(d.remarks || "")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="muted">No calls in this period.</td></tr>`;
+    }).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="muted">${recentFilter ? "No leads in this period." : "No calls in this period."}</td></tr>`;
+  }
+
+  function applyRecentFilter(filter) {
+    recentFilter = filter;
+    renderRecent(lastRecentDisp, lastRecentNames);
   }
 
   function fmtDT(d) {
