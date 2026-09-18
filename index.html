@@ -245,7 +245,7 @@
         What actually happened when the app tried to text the Apply Card link
         alongside a call — agents are remote, so this is the only way to see
         a denied permission or a carrier failure on their own phone.
-        All-time, every agent.
+        Same date range as the tiles above (<span id="smsRangeLabel">today</span>), every agent.
       </p>
       <div class="table-wrap scroll-y">
         <table id="smsOutcomeTable">
@@ -752,6 +752,10 @@
         .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
       rangeDays = Number(b.dataset.days);
       load();
+      // Apply Card SMS delivery (inside the Database report) now tracks
+      // this same range — see loadDatabaseStats. The rest of that
+      // report is deliberately whole-pool and does not need a reload.
+      if (isAdmin) loadDatabaseStats();
     };
   });
 
@@ -1462,6 +1466,22 @@
     const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
     try {
+      // Apply Card SMS delivery is scoped to the same Today/Last 7 days/
+      // Last 30 days/All time range as the tiles up top, not the whole
+      // table like the other Database-section reports below — it's a
+      // "is this working right now" diagnostic, so a device that was
+      // failing permission_denied last month but fixed itself since
+      // shouldn't still be flagged today. Queries the raw log rather
+      // than v_sms_outcomes (migration 24, which has no date filter) and
+      // aggregates client-side, the same way renderAgents/renderRecent
+      // build their tables from call_dispositions.
+      let smsQ = sb.from("sms_delivery_log")
+        .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
+        .order("created_at", { ascending: false })
+        .limit(5000);
+      const smsSince = sinceIso();
+      if (smsSince) smsQ = smsQ.gte("created_at", smsSince);
+
       const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes] = await Promise.all([
         sb.from("leads").select("id", { count: "exact", head: true }),
         sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
@@ -1469,7 +1489,7 @@
         sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
         sb.from("call_dispositions").select("id", { count: "exact", head: true }),
         sb.from("v_batch_summary").select("*"),
-        sb.from("v_sms_outcomes").select("*"),
+        smsQ,
         sb.from("v_app_versions").select("*"),
         sb.from("v_agent_contacts").select("*"),
         sb.from("v_search_activity").select("*")
@@ -1524,10 +1544,30 @@
       // Card message never reached. Broken down per agent (migration 24)
       // rather than totalled across everyone: one agent stuck on
       // permission_denied used to be invisible in a fleet-wide total
-      // that also included everyone else's successful sends. Sorted by
-      // agent then count already (v_sms_outcomes), so each agent's
-      // biggest failure mode is the top row under their name.
-      const smsRows = smsRes.data || [];
+      // that also included everyone else's successful sends. Grouped by
+      // agent+outcome here (client-side, from the raw log) rather than
+      // via v_sms_outcomes, so it can be scoped to the date range above;
+      // sorted the same way the view was — agent, then that agent's
+      // biggest failure mode on top.
+      const smsGroups = {};
+      for (const row of (smsRes.data || [])) {
+        const key = row.agent_id + "|" + row.outcome;
+        let g = smsGroups[key];
+        if (!g) {
+          g = smsGroups[key] = {
+            full_name: row.profiles && row.profiles.full_name,
+            login_id: row.profiles && row.profiles.login_id,
+            outcome: row.outcome,
+            total: 0,
+            most_recent: row.created_at
+          };
+        }
+        g.total++;
+        if (row.created_at > g.most_recent) g.most_recent = row.created_at;
+      }
+      const smsRows = Object.values(smsGroups)
+        .sort((a, b) => (a.full_name || a.login_id || "").localeCompare(b.full_name || b.login_id || "") || b.total - a.total);
+      $("smsRangeLabel").textContent = rangeLabel();
       smsTbody.innerHTML = smsRows.length
         ? smsRows.map(o => `
           <tr>
@@ -1536,7 +1576,7 @@
             <td class="num">${o.total}</td>
             <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
           </tr>`).join("")
-        : `<tr><td colspan="4" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
+        : `<tr><td colspan="4" class="muted">No SMS attempts in this period.</td></tr>`;
 
       // Green only for whichever version is the newest ANY agent has
       // actually reported — there's no fixed "latest" constant to compare
