@@ -819,7 +819,7 @@
           return `<tr>
             <td class="${outside ? "err" : ""}">${esc(fmtIst(r.occurred_at))}${outside ? " · outside hours" : ""}</td>
             <td>${esc(r.full_name || r.login_id)}</td>
-            <td class="${r.event === "login" ? "ok" : ""}">${esc(r.event)}</td>
+            <td class="${r.event === "login" ? "ok" : ""}">${esc(r.event === "app_opened" ? "App opened" : r.event)}</td>
             <td class="muted">${esc(r.platform || "—")}</td>
           </tr>`;
         }).join("")
@@ -941,7 +941,7 @@
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
       const fastGap = r.gapMs != null && r.gapMs < 40000;
-      const typeLabel = { login: "Login", logout: "Logout", call: "Call attempt", save: "Saved outcome" }[r.type];
+      const typeLabel = { login: "Login", logout: "Logout", app_opened: "App opened", call: "Call attempt", save: "Saved outcome" }[r.type];
       return `<tr>
         <td class="${outside ? "err" : ""}">${esc(fmtIstTime(r.time))}${outside ? " · outside hours" : ""}</td>
         <td class="${r.type === "login" ? "ok" : r.type === "logout" ? "err" : ""}">${esc(typeLabel)}</td>
