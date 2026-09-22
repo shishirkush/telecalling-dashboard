@@ -507,14 +507,15 @@
         Every sign-in and sign-out the app or web client got a chance to
         report, for the date range selected above — its own filter,
         independent of the main dashboard's, defaulting to a week rather
-        than today only. A login is logged every time the app becomes
-        active with a valid session, not only on typing a password —
-        most agents sign in once and stay signed in for days, so scoping
-        it to that alone would show almost nothing. This is still not a
-        guarantee someone was signed out the whole time between a login
-        and its next logout — a killed app or a closed browser tab never
-        gets to report that. Calling hours are 9:00 AM–7:00 PM IST; a
-        login or logout outside that window is highlighted below (leads
+        than today only. Login means a real password sign-in only; a
+        relaunch or reload that resumes an already-saved session logs
+        separately as App opened, at most once every 30 minutes per
+        device, so a day of app restarts doesn't flood this table with
+        logins nobody actually typed. This is still not a guarantee
+        someone was signed out the whole time between a login and its
+        next logout — a killed app or a closed browser tab never gets to
+        report that. Calling hours are 9:00 AM–7:00 PM IST; a login or
+        logout outside that window is highlighted below (leads
         themselves can only be claimed inside it, enforced server-side
         in claim_next_lead()).
       </p>
