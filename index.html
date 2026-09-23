@@ -233,15 +233,16 @@
 
     <div class="tiles" id="tiles"></div>
 
-    <div class="card hidden" id="dbStatsCard">
+    <div class="card" id="custLookupCard">
       <h2>Customer lookup</h2>
       <p class="muted" style="margin-top:0">
         For a customer calling back whose lead isn't showing up anywhere
         obvious — closed weeks ago, or never assigned to whoever's taking
         this call. Enter their mobile number or PAN — exact match only,
         same <code>search_lead()</code> the app and web client use, so it
-        finds a lead regardless of which agent or batch it belongs to.
-        Every search is logged below under Customer search activity.
+        finds a lead regardless of which agent or batch it belongs to, or
+        which manager the agent reports to. Every search is logged the
+        same way an agent's own search from the app is.
       </p>
       <div class="lookup-row">
         <input id="custLookupInput" placeholder="Mobile number or PAN"
@@ -250,8 +251,10 @@
       </div>
       <p id="custLookupError" class="err"></p>
       <div id="custLookupResults"></div>
+    </div>
 
-      <h2 style="margin-top:24px">Database</h2>
+    <div class="card hidden" id="dbStatsCard">
+      <h2>Database</h2>
       <p class="muted" style="margin-top:0">
         The whole lead pool — every lead ever imported, not scoped to the
         date range above or to any one manager's agents.
@@ -1561,10 +1564,19 @@
       return;
     }
 
-    const agentName = id => {
-      const a = assignAgents.find(x => x.id === id);
-      return a ? a.login_id : null;
-    };
+    // search_lead() bypasses leads RLS on purpose (whole-database lookup),
+    // but this profiles fetch does not — a manager gets a login_id back
+    // only for an agent actually theirs (manages_agent() in backend/09),
+    // same as everywhere else in this dashboard. A blank result here
+    // means either that agent isn't this manager's, or the id belongs to
+    // an admin/archived account; both render the same neutral fallback
+    // rather than guessing which.
+    const assignedIds = [...new Set(rows.map(l => l.assigned_to).filter(Boolean))];
+    let agentNames = {};
+    if (assignedIds.length) {
+      const { data: agentRows } = await sb.from("profiles").select("id, login_id").in("id", assignedIds);
+      (agentRows || []).forEach(a => { agentNames[a.id] = a.login_id; });
+    }
 
     resultsEl.innerHTML = rows.map(l => {
       const meta = l.last_status ? metaFor(l.last_status) : null;
@@ -1578,7 +1590,7 @@
         ["ICI Cr Lmt", fmtRupees(l.ici_cr_lmt)],
         ["Address", l.address || "—"],
         ["Batch", l.batch || "(no batch)"],
-        ["Assigned to", l.assigned_to ? (agentName(l.assigned_to) || "an archived agent") : "Unassigned"],
+        ["Assigned to", l.assigned_to ? (agentNames[l.assigned_to] || "an agent outside your view") : "Unassigned"],
         ["Status", meta ? meta.label : "Never called"],
         ["Callback at", l.callback_at ? fmtDT(new Date(l.callback_at)) : "—"],
         ["Closed", l.is_closed ? "Yes" : "No"]
