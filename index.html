@@ -168,6 +168,22 @@
   .err { color: var(--critical); }
   .ok  { color: var(--good); }
 
+  /* ---- customer lookup ---- */
+  .lookup-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .lookup-row input { flex: 1; }
+  .lookup-card {
+    border: 1px solid var(--baseline); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .lookup-card h3 { margin: 0 0 10px; font-size: 15px; }
+  .lookup-card .lf-row {
+    display: flex; gap: 10px; padding: 4px 0; font-size: 13.5px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .lookup-card .lf-row:last-child { border-bottom: none; }
+  .lookup-card .lf-row .l { flex: 0 0 170px; color: var(--text-muted); }
+  .lookup-card .lf-row .v { flex: 1; word-break: break-word; }
+
   /* ---- login / setup ---- */
   .center { max-width: 400px; margin: 8vh auto; }
   .field { margin-bottom: 12px; }
@@ -218,7 +234,24 @@
     <div class="tiles" id="tiles"></div>
 
     <div class="card hidden" id="dbStatsCard">
-      <h2>Database</h2>
+      <h2>Customer lookup</h2>
+      <p class="muted" style="margin-top:0">
+        For a customer calling back whose lead isn't showing up anywhere
+        obvious — closed weeks ago, or never assigned to whoever's taking
+        this call. Enter their mobile number or PAN — exact match only,
+        same <code>search_lead()</code> the app and web client use, so it
+        finds a lead regardless of which agent or batch it belongs to.
+        Every search is logged below under Customer search activity.
+      </p>
+      <div class="lookup-row">
+        <input id="custLookupInput" placeholder="Mobile number or PAN"
+          autocapitalize="characters" autocomplete="off">
+        <button class="primary" id="custLookupBtn">Search</button>
+      </div>
+      <p id="custLookupError" class="err"></p>
+      <div id="custLookupResults"></div>
+
+      <h2 style="margin-top:24px">Database</h2>
       <p class="muted" style="margin-top:0">
         The whole lead pool — every lead ever imported, not scoped to the
         date range above or to any one manager's agents.
@@ -1469,6 +1502,99 @@
   function errText(e) {
     return e?.message || e?.details || e?.hint || (typeof e === "string" ? e : JSON.stringify(e));
   }
+
+  function fmtRupees(n) {
+    if (n == null) return "—";
+    return "₹" + Math.round(n).toLocaleString("en-IN");
+  }
+  function fmtDob(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d)) return iso;
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  // Same search_lead() RPC (backend/16_lead_search.sql) the app and web
+  // client already call — exact mobile/PAN match, whole database, no
+  // regard for who a lead is assigned to. Every call here is logged the
+  // same way an agent's own search is, under this admin's login, and
+  // counts against the same 30/hour cap. assigned_to is resolved to a
+  // login_id via assignAgents (populated by loadAssignmentsPanel, which
+  // has already run by the time an admin can see this admin-only card).
+  const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+  async function performCustomerLookup() {
+    const raw = $("custLookupInput").value.trim();
+    const errEl = $("custLookupError");
+    const resultsEl = $("custLookupResults");
+    errEl.textContent = "";
+
+    const compact = raw.replace(/[ -]/g, "");
+    const digitsOnly = raw.replace(/\D/g, "");
+    const looksLikeMobile = compact.length > 0 && /^[\d+]+$/.test(compact) && digitsOnly.length >= 10;
+    const mobile = looksLikeMobile ? digitsOnly.slice(-10) : null;
+    const pan = !looksLikeMobile ? (PAN_RE.test(compact.toUpperCase()) ? compact.toUpperCase() : null) : null;
+
+    if (!mobile && !pan) {
+      errEl.textContent = "Enter a valid 10-digit mobile number or PAN, e.g. ABCDE1234F.";
+      resultsEl.innerHTML = "";
+      return;
+    }
+
+    $("custLookupBtn").disabled = true;
+    resultsEl.innerHTML = '<p class="muted">Searching…</p>';
+    const params = {};
+    if (mobile) params.p_mobile = mobile;
+    if (pan) params.p_pan = pan;
+    const { data, error } = await sb.rpc("search_lead", params);
+    $("custLookupBtn").disabled = false;
+
+    if (error) {
+      errEl.textContent = errText(error);
+      resultsEl.innerHTML = "";
+      return;
+    }
+
+    const rows = data || [];
+    if (!rows.length) {
+      resultsEl.innerHTML = '<p class="muted">No match.</p>';
+      return;
+    }
+
+    const agentName = id => {
+      const a = assignAgents.find(x => x.id === id);
+      return a ? a.login_id : null;
+    };
+
+    resultsEl.innerHTML = rows.map(l => {
+      const meta = l.last_status ? metaFor(l.last_status) : null;
+      const fields = [
+        ["Mobile", l.mobile],
+        ["PAN", (l.pan || "—").toUpperCase()],
+        ["Email", l.email || "—"],
+        ["DOB", fmtDob(l.dob)],
+        ["Annual Income Range", l.annual_income_range || "—"],
+        ["Company", l.company || "—"],
+        ["ICI Cr Lmt", fmtRupees(l.ici_cr_lmt)],
+        ["Address", l.address || "—"],
+        ["Batch", l.batch || "(no batch)"],
+        ["Assigned to", l.assigned_to ? (agentName(l.assigned_to) || "an archived agent") : "Unassigned"],
+        ["Status", meta ? meta.label : "Never called"],
+        ["Callback at", l.callback_at ? fmtDT(new Date(l.callback_at)) : "—"],
+        ["Closed", l.is_closed ? "Yes" : "No"]
+      ];
+      return `
+        <div class="lookup-card">
+          <h3>${esc(l.name || "Name not provided")}</h3>
+          ${fields.map(([label, value]) => `
+            <div class="lf-row"><div class="l">${esc(label)}</div><div class="v">${esc(value)}</div></div>
+          `).join("")}
+        </div>`;
+    }).join("");
+  }
+
+  $("custLookupBtn").onclick = performCustomerLookup;
+  $("custLookupInput").onkeydown = e => { if (e.key === "Enter") performCustomerLookup(); };
 
   async function loadDatabaseStats() {
     const tilesEl = $("dbTiles");
