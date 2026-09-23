@@ -1459,6 +1459,17 @@
   // from v_batch_summary (backend/10_database_report.sql). Both run
   // under admin's own RLS, which is what makes the totals whole-pool
   // rather than scoped to admin's own assigned agents (admin has none).
+  // A readable message regardless of what shape a failure took — a
+  // Postgrest error has .message, but it's sometimes empty (a bare
+  // statement-timeout 500 can arrive with no message body at all — see
+  // backend/29_leads_batch_summary_idx.sql), so this falls through to
+  // .details/.hint before giving up and stringifying whatever it got.
+  // Without this, an error object with no usable .message rendered
+  // literally as the text "[object Object]".
+  function errText(e) {
+    return e?.message || e?.details || e?.hint || (typeof e === "string" ? e : JSON.stringify(e));
+  }
+
   async function loadDatabaseStats() {
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
@@ -1466,61 +1477,83 @@
     const versionTbody = $("appVersionTable").querySelector("tbody");
     const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
-    try {
-      // Apply Card SMS delivery is scoped to the same Today/Last 7 days/
-      // Last 30 days/All time range as the tiles up top, not the whole
-      // table like the other Database-section reports below — it's a
-      // "is this working right now" diagnostic, so a device that was
-      // failing permission_denied last month but fixed itself since
-      // shouldn't still be flagged today. Queries the raw log rather
-      // than v_sms_outcomes (migration 24, which has no date filter) and
-      // aggregates client-side, the same way renderAgents/renderRecent
-      // build their tables from call_dispositions.
-      let smsQ = sb.from("sms_delivery_log")
-        .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
-        .order("created_at", { ascending: false })
-        .limit(5000);
-      const smsSince = sinceIso();
-      if (smsSince) smsQ = smsQ.gte("created_at", smsSince);
 
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes] = await Promise.all([
-        sb.from("leads").select("id", { count: "exact", head: true }),
-        sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
-        sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
-        sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
-        sb.from("call_dispositions").select("id", { count: "exact", head: true }),
-        sb.from("v_batch_summary").select("*"),
-        smsQ,
-        sb.from("v_app_versions").select("*"),
-        sb.from("v_agent_contacts").select("*"),
-        sb.from("v_search_activity").select("*")
-      ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes]) {
-        if (r.error) throw r.error;
-      }
+    // Apply Card SMS delivery is scoped to the same Today/Last 7 days/
+    // Last 30 days/All time range as the tiles up top, not the whole
+    // table like the other Database-section reports below — it's a
+    // "is this working right now" diagnostic, so a device that was
+    // failing permission_denied last month but fixed itself since
+    // shouldn't still be flagged today. Queries the raw log rather
+    // than v_sms_outcomes (migration 24, which has no date filter) and
+    // aggregates client-side, the same way renderAgents/renderRecent
+    // build their tables from call_dispositions.
+    let smsQ = sb.from("sms_delivery_log")
+      .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    const smsSince = sinceIso();
+    if (smsSince) smsQ = smsQ.gte("created_at", smsSince);
 
-      const total = totalRes.count ?? 0;
-      const called = calledRes.count ?? 0;
-      const pendingPct = total ? (100 * (pendingRes.count ?? 0) / total).toFixed(1) : "0.0";
+    // "estimated", not "exact": with 80k+ leads and growing, an exact
+    // count over a large table can blow Supabase's statement timeout —
+    // that used to come back as a bare 500 that threw and blanked this
+    // entire section, tables that had nothing to do with the slow query
+    // included. A planner estimate is instant regardless of table size,
+    // which is exactly right for a rounded KPI tile that already shows
+    // a 1-decimal percentage next to it.
+    //
+    // Promise.allSettled (not Promise.all) + a per-section check below,
+    // rather than one throw-on-first-error: a single slow/failing query
+    // — the leads count, or the v_batch_summary aggregate, still a real
+    // full-table scan no count strategy fixes, see backend/29 — now only
+    // blanks its own tile or table instead of every other one on the page.
+    const settled = await Promise.allSettled([
+      sb.from("leads").select("id", { count: "estimated", head: true }),
+      sb.from("leads").select("id", { count: "estimated", head: true }).gt("attempts", 0),
+      sb.from("leads").select("id", { count: "estimated", head: true }).eq("attempts", 0),
+      sb.from("leads").select("id", { count: "estimated", head: true }).eq("is_closed", true),
+      sb.from("call_dispositions").select("id", { count: "estimated", head: true }),
+      sb.from("v_batch_summary").select("*"),
+      smsQ,
+      sb.from("v_app_versions").select("*"),
+      sb.from("v_agent_contacts").select("*"),
+      sb.from("v_search_activity").select("*")
+    ]);
+    // allSettled never rejects, so unwrap each into the {data, count,
+    // error} shape the rendering below expects — a network-level
+    // rejection (not a Postgrest response) becomes a synthetic .error.
+    const [total, called, pending, closed, attempts, batch, sms, version, contact, search] =
+      settled.map(r => r.status === "fulfilled" ? r.value : { error: r.reason });
 
+    if (total.error || called.error || pending.error || closed.error || attempts.error) {
+      tilesEl.innerHTML = '<span class="err">' +
+        esc(errText(total.error || called.error || pending.error || closed.error || attempts.error)) + "</span>";
+    } else {
+      const totalCount = total.count ?? 0;
+      const calledCount = called.count ?? 0;
+      const pendingPct = totalCount ? (100 * (pending.count ?? 0) / totalCount).toFixed(1) : "0.0";
       tilesEl.innerHTML = `
         <div class="tile"><div class="label">Total leads</div>
-          <div class="value">${total}</div>
+          <div class="value">${totalCount}</div>
           <div class="sub">every lead ever imported</div></div>
         <div class="tile"><div class="label">Called at least once</div>
-          <div class="value">${called}</div>
-          <div class="sub">${total ? (100 * called / total).toFixed(1) : "0.0"}% of total</div></div>
+          <div class="value">${calledCount}</div>
+          <div class="sub">${totalCount ? (100 * calledCount / totalCount).toFixed(1) : "0.0"}% of total</div></div>
         <div class="tile"><div class="label">Never called (pending)</div>
-          <div class="value">${pendingRes.count ?? 0}</div>
+          <div class="value">${pending.count ?? 0}</div>
           <div class="sub">${pendingPct}% of total</div></div>
         <div class="tile"><div class="label">Closed</div>
-          <div class="value">${closedRes.count ?? 0}</div>
+          <div class="value">${closed.count ?? 0}</div>
           <div class="sub">wrong no. / not interested / lead</div></div>
         <div class="tile"><div class="label">Total call attempts</div>
-          <div class="value">${attemptsRes.count ?? 0}</div>
+          <div class="value">${attempts.count ?? 0}</div>
           <div class="sub">all-time, every outcome</div></div>`;
+    }
 
-      const rows = batchRes.data || [];
+    if (batch.error) {
+      tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(errText(batch.error))}</td></tr>`;
+    } else {
+      const rows = batch.data || [];
       tbody.innerHTML = rows.length
         ? rows.map(b => `
           <tr>
@@ -1538,7 +1571,11 @@
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
         : `<tr><td colspan="8" class="muted">No leads imported yet.</td></tr>`;
+    }
 
+    if (sms.error) {
+      smsTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(sms.error))}</td></tr>`;
+    } else {
       // "sent" is the only outcome that means the text actually went out;
       // everything else — a denied permission, no carrier service, a
       // radio-off phone, an app exception — is a real device the Apply
@@ -1551,7 +1588,7 @@
       // sorted the same way the view was — agent, then that agent's
       // biggest failure mode on top.
       const smsGroups = {};
-      for (const row of (smsRes.data || [])) {
+      for (const row of (sms.data || [])) {
         const key = row.agent_id + "|" + row.outcome;
         let g = smsGroups[key];
         if (!g) {
@@ -1578,13 +1615,17 @@
             <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
           </tr>`).join("")
         : `<tr><td colspan="4" class="muted">No SMS attempts in this period.</td></tr>`;
+    }
 
+    if (version.error) {
+      versionTbody.innerHTML = `<tr><td colspan="6" class="err">${esc(errText(version.error))}</td></tr>`;
+    } else {
       // Green only for whichever version is the newest ANY agent has
       // actually reported — there's no fixed "latest" constant to compare
       // against here (that lives in the GitHub release, not this page),
       // so "up to date" means "matches the furthest-along phone we know
       // about," not a guarantee that's the true latest release.
-      const versionRows = versionRes.data || [];
+      const versionRows = version.data || [];
       const newest = versionRows.reduce((best, v) => {
         if (!v.app_version) return best;
         const parts = v.app_version.split(".").map(Number);
@@ -1641,8 +1682,12 @@
           }).join("")
         : `<tr><td colspan="6" class="muted">No active agents.</td></tr>`;
       if (!$("archivedPage").classList.contains("hidden")) renderArchivedPage();
+    }
 
-      const contactRows = (contactRes.data || []).filter(c => c.active);
+    if (contact.error) {
+      contactTbody.innerHTML = `<tr><td colspan="3" class="err">${esc(errText(contact.error))}</td></tr>`;
+    } else {
+      const contactRows = (contact.data || []).filter(c => c.active);
       contactTbody.innerHTML = contactRows.length
         ? contactRows.map(c => `
           <tr>
@@ -1651,11 +1696,15 @@
             <td class="${c.contact_number ? "" : "muted"}">${esc(c.contact_number || "Not set yet")}</td>
           </tr>`).join("")
         : `<tr><td colspan="3" class="muted">No active agents.</td></tr>`;
+    }
 
+    if (search.error) {
+      searchTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(search.error))}</td></tr>`;
+    } else {
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
       // like — flag both in red so it isn't buried in an all-black table.
-      const searchRows = searchRes.data || [];
+      const searchRows = search.data || [];
       searchTbody.innerHTML = searchRows.length
         ? searchRows.map(s => `
           <tr>
@@ -1665,8 +1714,6 @@
             <td>${esc(fmtDT(new Date(s.last_search)))}</td>
           </tr>`).join("")
         : `<tr><td colspan="4" class="muted">No searches yet.</td></tr>`;
-    } catch (e) {
-      tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
   }
 
