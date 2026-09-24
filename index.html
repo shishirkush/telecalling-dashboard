@@ -951,14 +951,16 @@
     attempts.forEach(a => {
       // Detail used to be a hardcoded "Tapped Call" on every one of these
       // rows — the Event column already says "Call attempt", so it never
-      // told anyone anything the row wasn't already saying. call_attempts
+      // told anyone anything the row wasn't already saying. Left blank
+      // now rather than swapped for another placeholder: Time, Event and
+      // Lead already carry everything known about this row. call_attempts
       // itself carries nothing past lead_id/agent_id/attempted_at (see
       // backend/22_require_call_before_disposition.sql), so the one real
-      // fact worth surfacing here is which number got dialed — same
-      // admin-only mobile visibility Saved outcome rows already use.
+      // fact worth adding is which number got dialed — same admin-only
+      // mobile visibility Saved outcome rows already use.
       const mobileNote = isAdmin && a.leads?.mobile ? ` (${esc(a.leads.mobile)})` : "";
       rows.push({
-        time: a.attempted_at, type: "call", lead: (a.leads?.name || "—") + mobileNote, detail: "—", gapMs: null
+        time: a.attempted_at, type: "call", lead: (a.leads?.name || "—") + mobileNote, detail: "", gapMs: null
       });
     });
     let fastGapCount = 0;
