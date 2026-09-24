@@ -583,14 +583,19 @@
     <div class="card">
       <p class="muted" style="margin-top:0">
         Every login/logout and saved outcome for this agent on the
-        selected day (India time), merged into one timeline. Tapping
-        Call itself (backend/22_require_call_before_disposition.sql)
-        doesn't get its own row — it only ever mattered here as the
-        start of <strong>Gap</strong>, the time between tapping Call
-        and saving that lead's outcome, shown on the outcome row it
-        belongs to. That's the real signal: a call genuinely worked (a
-        conversation, or several re-dials) varies a lot call to call,
-        while a gap that's <em>always</em> close to the 30-second floor
+        selected day (India time), merged into one timeline. A call
+        attempt (backend/22_require_call_before_disposition.sql) gets
+        no row of its own once it resolves into a Saved outcome — its
+        only job at that point was starting <strong>Gap</strong>, the
+        time between tapping Call and saving that lead's outcome, shown
+        on the outcome row it belongs to. An attempt that never
+        resolves — the agent backed out without saving, same "deliberate
+        exit" AppViewModel.backToQueue() allows with no confirmation —
+        still shows as its own Call attempt row below, since otherwise
+        it would vanish from this report entirely. That's the real
+        signal: a call genuinely worked (a conversation, or several
+        re-dials) varies a lot call to call, while a gap that's
+        <em>always</em> close to the 30-second floor
         (backend/23_minimum_call_dwell_time.sql) across many leads in a
         row is what tapping Call, hanging up immediately, and waiting
         out the timer looks like — flagged in red below at under 40s, a
@@ -924,12 +929,7 @@
     const [loginRes, attemptRes, dispRes] = await Promise.all([
       sb.from("login_log").select("event, platform, occurred_at")
         .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
-      // Only lead_id/attempted_at — a call attempt no longer gets its own
-      // timeline row (see below), so nothing here reads the lead's name
-      // or mobile any more. Still fetched for one reason: matching each
-      // Saved outcome to whichever attempt actually satisfied
-      // save_disposition()'s gate, to compute Gap.
-      sb.from("call_attempts").select("lead_id, attempted_at")
+      sb.from("call_attempts").select("lead_id, attempted_at, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
       sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
@@ -955,24 +955,34 @@
     logins.forEach(l => rows.push({
       time: l.occurred_at, type: l.event, lead: "", detail: l.platform || "—", gapMs: null
     }));
-    // No row of its own for a call attempt — every attempt already
-    // resolves into a Saved outcome row (or the agent never saved one,
-    // which the tile below counts separately as attempts vs. saves).
-    // Tapping Call only ever mattered here as the start of the Gap
-    // measurement, and Gap is shown on the Saved outcome row itself, so
-    // a bare "Call attempt, nothing else known yet" row was pure noise —
-    // twice the rows for the same information already on the row below it.
+    // A call attempt gets no row of its own once it resolves into a
+    // Saved outcome — Gap already says everything worth saying about it,
+    // shown on that Saved outcome row rather than doubling the row count.
+    // But an attempt that never turned into a save that day (abandoned
+    // mid-call, or just never got back to) would otherwise vanish
+    // entirely — matchedAttempts tracks which attempt object, if any,
+    // each disposition below actually consumed, so anything left over
+    // still gets its own "Call attempt" row after the loop.
+    const matchedAttempts = new Set();
     let fastGapCount = 0;
     dispositions.forEach(d => {
       const meta = STATUS_META.find(s => s.wire === d.status);
       const candidates = (attemptsByLead[d.lead_id] || []).filter(a => new Date(a.attempted_at) <= new Date(d.called_at));
       const matched = candidates.length ? candidates[candidates.length - 1] : null;
+      if (matched) matchedAttempts.add(matched);
       const gapMs = matched ? (new Date(d.called_at) - new Date(matched.attempted_at)) : null;
       if (gapMs != null && gapMs < 40000) fastGapCount++;
       const mobileNote = isAdmin && d.leads?.mobile ? ` (${esc(d.leads.mobile)})` : "";
       rows.push({
         time: d.called_at, type: "save", lead: (d.leads?.name || "—") + mobileNote,
         detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs
+      });
+    });
+    attempts.forEach(a => {
+      if (matchedAttempts.has(a)) return;
+      const mobileNote = isAdmin && a.leads?.mobile ? ` (${esc(a.leads.mobile)})` : "";
+      rows.push({
+        time: a.attempted_at, type: "call", lead: (a.leads?.name || "—") + mobileNote, detail: "", gapMs: null
       });
     });
     rows.sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -989,7 +999,7 @@
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
       const fastGap = r.gapMs != null && r.gapMs < 40000;
-      const typeLabel = { login: "Login", logout: "Logout", app_opened: "App opened", save: "Saved outcome" }[r.type];
+      const typeLabel = { login: "Login", logout: "Logout", app_opened: "App opened", call: "Call attempt", save: "Saved outcome" }[r.type];
       return `<tr>
         <td class="${outside ? "err" : ""}">${esc(fmtIstTime(r.time))}${outside ? " · outside hours" : ""}</td>
         <td class="${r.type === "login" ? "ok" : r.type === "logout" ? "err" : ""}">${esc(typeLabel)}</td>
