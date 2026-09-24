@@ -922,7 +922,7 @@
     const [loginRes, attemptRes, dispRes] = await Promise.all([
       sb.from("login_log").select("event, platform, occurred_at")
         .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
-      sb.from("call_attempts").select("lead_id, attempted_at, leads(name)")
+      sb.from("call_attempts").select("lead_id, attempted_at, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
       sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
@@ -948,9 +948,19 @@
     logins.forEach(l => rows.push({
       time: l.occurred_at, type: l.event, lead: "", detail: l.platform || "—", gapMs: null
     }));
-    attempts.forEach(a => rows.push({
-      time: a.attempted_at, type: "call", lead: a.leads?.name || "—", detail: "Tapped Call", gapMs: null
-    }));
+    attempts.forEach(a => {
+      // Detail used to be a hardcoded "Tapped Call" on every one of these
+      // rows — the Event column already says "Call attempt", so it never
+      // told anyone anything the row wasn't already saying. call_attempts
+      // itself carries nothing past lead_id/agent_id/attempted_at (see
+      // backend/22_require_call_before_disposition.sql), so the one real
+      // fact worth surfacing here is which number got dialed — same
+      // admin-only mobile visibility Saved outcome rows already use.
+      const mobileNote = isAdmin && a.leads?.mobile ? ` (${esc(a.leads.mobile)})` : "";
+      rows.push({
+        time: a.attempted_at, type: "call", lead: (a.leads?.name || "—") + mobileNote, detail: "—", gapMs: null
+      });
+    });
     let fastGapCount = 0;
     dispositions.forEach(d => {
       const meta = STATUS_META.find(s => s.wire === d.status);
