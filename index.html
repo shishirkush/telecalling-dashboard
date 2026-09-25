@@ -508,6 +508,14 @@
         ID and (optionally) a new password — otherwise the new hire's name
         would show up against the previous agent's entire call history.
       </p>
+      <p class="muted">
+        <strong>Delete</strong> permanently removes an agent's login —
+        but only if they never placed a call, sent an SMS, or signed in.
+        That's the usual case for a duplicate or mistyped account, not a
+        real seat someone actually worked from. If they have any history,
+        <strong>Reassign history</strong> onto another active agent first —
+        it'll leave nothing behind to delete.
+      </p>
       <div class="table-wrap">
         <table id="archivedTable">
           <thead><tr>
@@ -1992,6 +2000,8 @@
     if (renameBtn) { archivedEditMode = { id: renameBtn.dataset.agentId, mode: "rename" }; renderArchivedPage(); return; }
     const reassignBtn = e.target.closest(".reassign-agent-btn");
     if (reassignBtn) { archivedEditMode = { id: reassignBtn.dataset.agentId, mode: "reassign" }; renderArchivedPage(); return; }
+    const deleteBtn = e.target.closest(".delete-agent-btn");
+    if (deleteBtn) { onDeleteAgent(deleteBtn); return; }
     if (e.target.id === "renameCancelBtn" || e.target.id === "reassignCancelBtn") {
       archivedEditMode = null; renderArchivedPage(); return;
     }
@@ -2084,6 +2094,45 @@
     }
   }
 
+  // -----------------------------------------------------------------
+  // Permanently delete an archived agent with no call history — see
+  // supabase/functions/delete-agent for what "no call history" means and
+  // why an agent who has one can't go this way (reassign it first).
+  // -----------------------------------------------------------------
+  async function onDeleteAgent(btn) {
+    const agentId = btn.dataset.agentId;
+    const name = btn.dataset.agentName;
+    if (!confirm(
+      `Permanently delete "${name}"'s account? This only works if they ` +
+      `never placed a call, sent an SMS, or signed in — this cannot be ` +
+      `undone.`
+    )) return;
+
+    btn.disabled = true;
+    try {
+      const { data: sessionData } = await sb.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Your session has expired. Sign in again.");
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-agent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ agent_id: agentId })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status}).`);
+
+      loadDatabaseStats();
+    } catch (e) {
+      alert("Could not delete agent: " + (e.message || e));
+      btn.disabled = false;
+    }
+  }
+
   $("agentTable").addEventListener("click", (e) => {
     const link = e.target.closest(".link-btn");
     if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
@@ -2105,6 +2154,7 @@
             <button class="reassign-agent-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Reassign history</button>
             <button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
                  data-name="${esc(v.full_name)}" data-active="false">Unarchive</button>
+            <button class="delete-agent-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Delete</button>
           </td>
         </tr>`;
 
