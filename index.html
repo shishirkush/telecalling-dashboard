@@ -253,6 +253,31 @@
       <div id="custLookupResults"></div>
     </div>
 
+    <div class="card hidden" id="campaignsCard">
+      <h2>Campaigns</h2>
+      <p class="muted" style="margin-top:0">
+        An agent works one campaign at a time (picked in the app, changed
+        any time via Switch campaign) and only sees leads from batches
+        assigned to that campaign below — a batch with no campaign here
+        is unallotted and won't be served to anyone, even if it's still
+        switched on.
+      </p>
+      <div class="table-wrap">
+        <table id="campaignsTable">
+          <thead><tr>
+            <th>Name</th>
+            <th>Active</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="lookup-row" style="margin-top:12px">
+        <input id="newCampaignName" placeholder="New campaign name">
+        <button class="primary" id="addCampaignBtn">Add campaign</button>
+      </div>
+      <p id="campaignError" class="err"></p>
+    </div>
+
     <div class="card hidden" id="dbStatsCard">
       <h2>Database</h2>
       <p class="muted" style="margin-top:0">
@@ -269,6 +294,7 @@
             <th class="num">Pending</th>
             <th class="num">Closed</th>
             <th>Imported</th>
+            <th>Campaign</th>
             <th>Calling</th>
             <th></th>
           </tr></thead>
@@ -652,6 +678,7 @@
   let isAdmin = false;
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
   let activeAgents = [];   // same shape, active === true — reassign-history target list
+  let campaigns = [];      // [{id, name, is_active}] — also the Campaign <select> options in the batch table
   let archivedEditMode = null; // {id, mode: "rename" | "reassign"} | null
 
   const STATUS_META = [
@@ -1046,6 +1073,7 @@
     show($("csvCard"), isAdmin);
     show($("createAgentCard"), isAdmin);
     show($("assignmentsCard"), isAdmin);
+    show($("campaignsCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
     // regular supervisor login sees everything else on this dashboard but
@@ -1684,12 +1712,13 @@
       smsQ,
       sb.from("v_app_versions").select("*"),
       sb.from("v_agent_contacts").select("*"),
-      sb.from("v_search_activity").select("*")
+      sb.from("v_search_activity").select("*"),
+      sb.from("campaigns").select("*").order("name")
     ]);
     // allSettled never rejects, so unwrap each into the {data, count,
     // error} shape the rendering below expects — a network-level
     // rejection (not a Postgrest response) becomes a synthetic .error.
-    const [total, called, pending, closed, attempts, batch, sms, version, contact, search] =
+    const [total, called, pending, closed, attempts, batch, sms, version, contact, search, camp] =
       settled.map(r => r.status === "fulfilled" ? r.value : { error: r.reason });
 
     if (total.error || called.error || pending.error || closed.error || attempts.error) {
@@ -1717,8 +1746,11 @@
           <div class="sub">all-time, every outcome</div></div>`;
     }
 
+    campaigns = camp.error ? campaigns : (camp.data || []);
+    renderCampaignsTable();
+
     if (batch.error) {
-      tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(errText(batch.error))}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(errText(batch.error))}</td></tr>`;
     } else {
       const rows = batch.data || [];
       tbody.innerHTML = rows.length
@@ -1731,13 +1763,19 @@
             <td class="num">${b.closed}</td>
             <td>${esc(fmtDT(new Date(b.imported_at)))}</td>
             <td>${b.batch === "(no batch)"
+                ? '<span class="muted">unallotted</span>'
+                : `<select class="batch-campaign-select" data-batch="${esc(b.batch)}">
+                     <option value="">— unallotted —</option>
+                     ${campaigns.map(c => `<option value="${c.id}" ${c.id === b.campaign_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+                   </select>`}</td>
+            <td>${b.batch === "(no batch)"
                 ? '<span class="muted">always on</span>'
                 : `<button class="toggle-active ${b.is_active ? "ok" : "err"}"
                      data-batch="${esc(b.batch)}" data-active="${b.is_active}">
                      ${b.is_active ? "On" : "Off"}</button>`}</td>
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
-        : `<tr><td colspan="8" class="muted">No leads imported yet.</td></tr>`;
+        : `<tr><td colspan="9" class="muted">No leads imported yet.</td></tr>`;
     }
 
     if (sms.error) {
@@ -1897,6 +1935,81 @@
   // enough rather than the typed-name prompt below. batch_settings has no
   // row for a batch until the first toggle or import, hence upsert rather
   // than update.
+  function renderCampaignsTable() {
+    const tbody = $("campaignsTable").querySelector("tbody");
+    tbody.innerHTML = campaigns.length
+      ? campaigns.map(c => `
+        <tr>
+          <td>${esc(c.name)}</td>
+          <td><button class="toggle-campaign-active ${c.is_active ? "ok" : "err"}"
+                data-id="${c.id}" data-active="${c.is_active}">
+                ${c.is_active ? "On" : "Off"}</button></td>
+        </tr>`).join("")
+      : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
+  }
+
+  // Switching a campaign off doesn't touch batch_settings.campaign_id —
+  // claim_next_lead() checks the campaign's own is_active too, so turning
+  // it off here immediately stops serving every batch assigned to it,
+  // reversibly, without unassigning anything.
+  $("campaignsTable").addEventListener("click", async (e) => {
+    const toggle = e.target.closest(".toggle-campaign-active");
+    if (!toggle) return;
+    const id = Number(toggle.dataset.id);
+    const nextActive = toggle.dataset.active !== "true";
+    if (!nextActive && !confirm("Turn this campaign off? Every batch assigned to it stops being served immediately.")) return;
+
+    toggle.disabled = true;
+    try {
+      const { error } = await sb.from("campaigns").update({ is_active: nextActive }).eq("id", id);
+      if (error) throw error;
+      loadDatabaseStats();
+    } catch (err) {
+      alert("Could not change campaign status: " + (err.message || err));
+      toggle.disabled = false;
+    }
+  });
+
+  $("addCampaignBtn").onclick = async () => {
+    const input = $("newCampaignName");
+    const name = input.value.trim();
+    const errEl = $("campaignError");
+    errEl.textContent = "";
+    if (!name) { errEl.textContent = "Enter a campaign name."; return; }
+
+    $("addCampaignBtn").disabled = true;
+    try {
+      const { error } = await sb.from("campaigns").insert({ name });
+      if (error) throw error;
+      input.value = "";
+      loadDatabaseStats();
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+    }
+    $("addCampaignBtn").disabled = false;
+  };
+
+  // Assigning a batch to a campaign (or back to "— unallotted —") changes
+  // what claim_next_lead() will serve on the very next "Next lead" tap —
+  // same reversible-so-no-typed-prompt tier as the on/off toggle below,
+  // just a select's "change" event instead of a button's "click".
+  $("batchTable").addEventListener("change", async (e) => {
+    const select = e.target.closest(".batch-campaign-select");
+    if (!select) return;
+    const batch = select.dataset.batch;
+    const campaignId = select.value ? Number(select.value) : null;
+
+    select.disabled = true;
+    try {
+      const { error } = await sb.from("batch_settings")
+        .upsert({ batch, campaign_id: campaignId }, { onConflict: "batch" });
+      if (error) throw error;
+    } catch (err) {
+      alert("Could not change campaign: " + (err.message || err));
+    }
+    loadDatabaseStats();
+  });
+
   $("batchTable").addEventListener("click", async (e) => {
     const toggle = e.target.closest(".toggle-active");
     if (toggle) {
