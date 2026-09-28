@@ -110,6 +110,15 @@
   .tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
   .tile .value { font-size: 30px; font-weight: 600; line-height: 1.1; }
   .tile .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .tile[data-tile] { cursor: pointer; }
+  .tile[data-tile]:hover { border-color: var(--text-muted); }
+
+  /* Briefly highlighted after a tile click jumps a collapsed section open. */
+  @keyframes sectionFlash {
+    0%   { background: var(--grid); }
+    100% { background: transparent; }
+  }
+  #app main h2.flash { animation: sectionFlash 1.2s ease-out; }
 
   /* ---- bar chart ---- */
   .bar-row { display: grid; grid-template-columns: 132px 1fr 74px; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -158,6 +167,22 @@
   .muted { color: var(--text-muted); }
   .err { color: var(--critical); }
   .ok  { color: var(--good); }
+
+  /* ---- customer lookup ---- */
+  .lookup-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .lookup-row input { flex: 1; }
+  .lookup-card {
+    border: 1px solid var(--baseline); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .lookup-card h3 { margin: 0 0 10px; font-size: 15px; }
+  .lookup-card .lf-row {
+    display: flex; gap: 10px; padding: 4px 0; font-size: 13.5px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .lookup-card .lf-row:last-child { border-bottom: none; }
+  .lookup-card .lf-row .l { flex: 0 0 170px; color: var(--text-muted); }
+  .lookup-card .lf-row .v { flex: 1; word-break: break-word; }
 
   /* ---- login / setup ---- */
   .center { max-width: 400px; margin: 8vh auto; }
@@ -228,6 +253,51 @@
       </div>
     </div>
 
+    <div class="card" id="custLookupCard">
+      <h2>Customer lookup</h2>
+      <p class="muted" style="margin-top:0">
+        For a customer calling back whose lead isn't showing up anywhere
+        obvious — closed weeks ago, or never assigned to whoever's taking
+        this call. Enter their mobile number or PAN — exact match only,
+        same <code>search_lead()</code> the app and web client use, so it
+        finds a lead regardless of which agent or batch it belongs to, or
+        which manager the agent reports to. Every search is logged the
+        same way an agent's own search from the app is.
+      </p>
+      <div class="lookup-row">
+        <input id="custLookupInput" placeholder="Mobile number or PAN"
+          autocapitalize="characters" autocomplete="off">
+        <button class="primary" id="custLookupBtn">Search</button>
+      </div>
+      <p id="custLookupError" class="err"></p>
+      <div id="custLookupResults"></div>
+    </div>
+
+    <div class="card hidden" id="campaignsCard">
+      <h2>Campaigns</h2>
+      <p class="muted" style="margin-top:0">
+        An agent works one campaign at a time (picked in the app, changed
+        any time via Switch campaign) and only sees leads from batches
+        assigned to that campaign below — a batch with no campaign here
+        is unallotted and won't be served to anyone, even if it's still
+        switched on.
+      </p>
+      <div class="table-wrap">
+        <table id="campaignsTable">
+          <thead><tr>
+            <th>Name</th>
+            <th>Active</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="lookup-row" style="margin-top:12px">
+        <input id="newCampaignName" placeholder="New campaign name">
+        <button class="primary" id="addCampaignBtn">Add campaign</button>
+      </div>
+      <p id="campaignError" class="err"></p>
+    </div>
+
     <div class="card hidden" id="dbStatsCard">
       <h2>Database</h2>
       <p class="muted" style="margin-top:0">
@@ -244,6 +314,7 @@
             <th class="num">Pending</th>
             <th class="num">Closed</th>
             <th>Imported</th>
+            <th>Campaign</th>
             <th>Calling</th>
             <th></th>
           </tr></thead>
@@ -256,7 +327,7 @@
         What actually happened when the app tried to text the Apply Card link
         alongside a call — agents are remote, so this is the only way to see
         a denied permission or a carrier failure on their own phone.
-        All-time, every agent.
+        Same date range as the tiles above (<span id="smsRangeLabel">today</span>), every agent.
       </p>
       <div class="table-wrap scroll-y">
         <table id="smsOutcomeTable">
@@ -356,7 +427,7 @@
     </div>
 
     <div class="card">
-      <h2>Callbacks due</h2>
+      <h2 id="callbacksHeading">Callbacks due</h2>
       <div class="table-wrap scroll-y">
         <table id="callbackTable">
           <thead><tr>
@@ -368,7 +439,11 @@
     </div>
 
     <div class="card">
-      <h2>Recent calls</h2>
+      <h2 id="recentCallsHeading">Recent calls
+        <span id="recentFilterChip" class="chip hidden">Leads only
+          <button id="clearRecentFilter" type="button">×</button>
+        </span>
+      </h2>
       <div class="table-wrap scroll-y">
         <table id="recentTable">
           <thead><tr>
@@ -459,6 +534,14 @@
         ID and (optionally) a new password — otherwise the new hire's name
         would show up against the previous agent's entire call history.
       </p>
+      <p class="muted">
+        <strong>Delete</strong> permanently removes an agent's login —
+        but only if they never placed a call, sent an SMS, or signed in.
+        That's the usual case for a duplicate or mistyped account, not a
+        real seat someone actually worked from. If they have any history,
+        <strong>Reassign history</strong> onto another active agent first —
+        it'll leave nothing behind to delete.
+      </p>
       <div class="table-wrap">
         <table id="archivedTable">
           <thead><tr>
@@ -494,14 +577,15 @@
         Every sign-in and sign-out the app or web client got a chance to
         report, for the date range selected above — its own filter,
         independent of the main dashboard's, defaulting to a week rather
-        than today only. A login is logged every time the app becomes
-        active with a valid session, not only on typing a password —
-        most agents sign in once and stay signed in for days, so scoping
-        it to that alone would show almost nothing. This is still not a
-        guarantee someone was signed out the whole time between a login
-        and its next logout — a killed app or a closed browser tab never
-        gets to report that. Calling hours are 9:00 AM–7:00 PM IST; a
-        login or logout outside that window is highlighted below (leads
+        than today only. Login means a real password sign-in only; a
+        relaunch or reload that resumes an already-saved session logs
+        separately as App opened, at most once every 30 minutes per
+        device, so a day of app restarts doesn't flood this table with
+        logins nobody actually typed. This is still not a guarantee
+        someone was signed out the whole time between a login and its
+        next logout — a killed app or a closed browser tab never gets to
+        report that. Calling hours are 9:00 AM–7:00 PM IST; a login or
+        logout outside that window is highlighted below (leads
         themselves can only be claimed inside it, enforced server-side
         in claim_next_lead()).
       </p>
@@ -532,17 +616,24 @@
     <div class="tiles" id="agentReportTiles"></div>
     <div class="card">
       <p class="muted" style="margin-top:0">
-        Every login/logout, call attempt (the instant "Call" is tapped —
-        backend/22_require_call_before_disposition.sql) and saved outcome
-        for this agent on the selected day (India time), merged into one
-        timeline. <strong>Gap</strong> is the time between tapping Call
-        and saving that lead's outcome — the real signal here: a call
-        genuinely worked (a conversation, or several re-dials) varies a
-        lot call to call, while a gap that's <em>always</em> close to the
-        30-second floor (backend/23_minimum_call_dwell_time.sql) across
-        many leads in a row is what tapping Call, hanging up immediately,
-        and waiting out the timer looks like — flagged in red below at
-        under 40s, a 10-second margin past the floor itself.
+        Every login/logout and saved outcome for this agent on the
+        selected day (India time), merged into one timeline. A call
+        attempt (backend/22_require_call_before_disposition.sql) gets
+        no row of its own once it resolves into a Saved outcome — its
+        only job at that point was starting <strong>Gap</strong>, the
+        time between tapping Call and saving that lead's outcome, shown
+        on the outcome row it belongs to. An attempt that never
+        resolves — the agent backed out without saving, same "deliberate
+        exit" AppViewModel.backToQueue() allows with no confirmation —
+        still shows as its own Call attempt row below, since otherwise
+        it would vanish from this report entirely. That's the real
+        signal: a call genuinely worked (a conversation, or several
+        re-dials) varies a lot call to call, while a gap that's
+        <em>always</em> close to the 30-second floor
+        (backend/23_minimum_call_dwell_time.sql) across many leads in a
+        row is what tapping Call, hanging up immediately, and waiting
+        out the timer looks like — flagged in red below at under 40s, a
+        10-second margin past the floor itself.
       </p>
       <div class="table-wrap scroll-y">
         <table id="agentReportTable">
@@ -587,6 +678,7 @@
   let isAdmin = false;
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
   let activeAgents = [];   // same shape, active === true — reassign-history target list
+  let campaigns = [];      // [{id, name, is_active}] — also the Campaign <select> options in the batch table
   let archivedEditMode = null; // {id, mode: "rename" | "reassign"} | null
 
   const STATUS_META = [
@@ -651,6 +743,44 @@
   }
   initCollapsibleSections();
 
+  // Opens the collapsible section a given h2 heads (initCollapsibleSections
+  // already wrapped its content in the .collapsible-content sibling right
+  // after it), scrolls it into view, and briefly flashes it so a section
+  // that was already open still gives some feedback on click.
+  function openSection(h2) {
+    if (!h2) return;
+    const wrapper = h2.nextElementSibling;
+    if (wrapper && wrapper.classList.contains("hidden")) {
+      show(wrapper, true);
+      h2.classList.add("expanded");
+    }
+    h2.scrollIntoView({ behavior: "smooth", block: "start" });
+    h2.classList.remove("flash");
+    void h2.offsetWidth; // restart the animation if it's already mid-flash
+    h2.classList.add("flash");
+  }
+
+  // Leads generated -> Recent calls filtered to LEAD only.
+  // Callbacks pending -> Callbacks due (same data, no filtering needed).
+  $("tiles").addEventListener("click", (e) => {
+    const tile = e.target.closest("[data-tile]");
+    if (!tile) return;
+    if (tile.dataset.tile === "leads") {
+      applyRecentFilter("LEAD");
+      openSection($("recentCallsHeading"));
+    } else if (tile.dataset.tile === "callbacks") {
+      openSection($("callbacksHeading"));
+    }
+  });
+  $("tiles").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target.closest("[data-tile]")) { e.preventDefault(); e.target.click(); }
+  });
+  $("clearRecentFilter").addEventListener("click", (e) => {
+    e.stopPropagation(); // don't also collapse the section this button sits in
+    applyRecentFilter(null);
+  });
+
   // -----------------------------------------------------------------
   // Boot
   // -----------------------------------------------------------------
@@ -701,6 +831,10 @@
         .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
       rangeDays = Number(b.dataset.days);
       load();
+      // Apply Card SMS delivery (inside the Database report) now tracks
+      // this same range — see loadDatabaseStats. The rest of that
+      // report is deliberately whole-pool and does not need a reload.
+      if (isAdmin) loadDatabaseStats();
     };
   });
 
@@ -764,7 +898,7 @@
           return `<tr>
             <td class="${outside ? "err" : ""}">${esc(fmtIst(r.occurred_at))}${outside ? " · outside hours" : ""}</td>
             <td>${esc(r.full_name || r.login_id)}</td>
-            <td class="${r.event === "login" ? "ok" : ""}">${esc(r.event)}</td>
+            <td class="${r.event === "login" ? "ok" : ""}">${esc(r.event === "app_opened" ? "App opened" : r.event)}</td>
             <td class="muted">${esc(r.platform || "—")}</td>
           </tr>`;
         }).join("")
@@ -830,7 +964,7 @@
     const [loginRes, attemptRes, dispRes] = await Promise.all([
       sb.from("login_log").select("event, platform, occurred_at")
         .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
-      sb.from("call_attempts").select("lead_id, attempted_at, leads(name)")
+      sb.from("call_attempts").select("lead_id, attempted_at, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
       sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
@@ -856,20 +990,34 @@
     logins.forEach(l => rows.push({
       time: l.occurred_at, type: l.event, lead: "", detail: l.platform || "—", gapMs: null
     }));
-    attempts.forEach(a => rows.push({
-      time: a.attempted_at, type: "call", lead: a.leads?.name || "—", detail: "Tapped Call", gapMs: null
-    }));
+    // A call attempt gets no row of its own once it resolves into a
+    // Saved outcome — Gap already says everything worth saying about it,
+    // shown on that Saved outcome row rather than doubling the row count.
+    // But an attempt that never turned into a save that day (abandoned
+    // mid-call, or just never got back to) would otherwise vanish
+    // entirely — matchedAttempts tracks which attempt object, if any,
+    // each disposition below actually consumed, so anything left over
+    // still gets its own "Call attempt" row after the loop.
+    const matchedAttempts = new Set();
     let fastGapCount = 0;
     dispositions.forEach(d => {
       const meta = STATUS_META.find(s => s.wire === d.status);
       const candidates = (attemptsByLead[d.lead_id] || []).filter(a => new Date(a.attempted_at) <= new Date(d.called_at));
       const matched = candidates.length ? candidates[candidates.length - 1] : null;
+      if (matched) matchedAttempts.add(matched);
       const gapMs = matched ? (new Date(d.called_at) - new Date(matched.attempted_at)) : null;
       if (gapMs != null && gapMs < 40000) fastGapCount++;
       const mobileNote = isAdmin && d.leads?.mobile ? ` (${esc(d.leads.mobile)})` : "";
       rows.push({
         time: d.called_at, type: "save", lead: (d.leads?.name || "—") + mobileNote,
         detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs
+      });
+    });
+    attempts.forEach(a => {
+      if (matchedAttempts.has(a)) return;
+      const mobileNote = isAdmin && a.leads?.mobile ? ` (${esc(a.leads.mobile)})` : "";
+      rows.push({
+        time: a.attempted_at, type: "call", lead: (a.leads?.name || "—") + mobileNote, detail: "", gapMs: null
       });
     });
     rows.sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -886,7 +1034,7 @@
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
       const fastGap = r.gapMs != null && r.gapMs < 40000;
-      const typeLabel = { login: "Login", logout: "Logout", call: "Call attempt", save: "Saved outcome" }[r.type];
+      const typeLabel = { login: "Login", logout: "Logout", app_opened: "App opened", call: "Call attempt", save: "Saved outcome" }[r.type];
       return `<tr>
         <td class="${outside ? "err" : ""}">${esc(fmtIstTime(r.time))}${outside ? " · outside hours" : ""}</td>
         <td class="${r.type === "login" ? "ok" : r.type === "logout" ? "err" : ""}">${esc(typeLabel)}</td>
@@ -925,6 +1073,7 @@
     show($("csvCard"), isAdmin);
     show($("createAgentCard"), isAdmin);
     show($("assignmentsCard"), isAdmin);
+    show($("campaignsCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
     // regular supervisor login sees everything else on this dashboard but
@@ -1009,13 +1158,15 @@
       <div class="tile"><div class="label">Calls made</div>
         <div class="value">${total}</div>
         <div class="sub">${rangeLabel()}</div></div>
-      <div class="tile"><div class="label">Leads generated</div>
+      <div class="tile" data-tile="leads" role="button" tabindex="0" title="Show these calls in Recent calls">
+        <div class="label">Leads generated</div>
         <div class="value">${leads}</div>
         <div class="sub">${disp.filter(d => d.lead_quality === "HOT").length} hot</div></div>
       <div class="tile"><div class="label">Conversion</div>
         <div class="value">${conv}%</div>
         <div class="sub">leads ÷ calls</div></div>
-      <div class="tile"><div class="label">Callbacks pending</div>
+      <div class="tile" data-tile="callbacks" role="button" tabindex="0" title="Show the Callbacks due list">
+        <div class="label">Callbacks pending</div>
         <div class="value">${callbacks.length}</div>
         <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>`;
   }
@@ -1061,7 +1212,9 @@
       if (d.status in r) r[d.status]++;
     });
 
-    const list = Object.values(rows).sort((a, b) => b.LEAD - a.LEAD || b.total - a.total);
+    const list = Object.values(rows)
+      .filter(r => r.total > 0)
+      .sort((a, b) => b.LEAD - a.LEAD || b.total - a.total);
     const tbody = $("agentTable").querySelector("tbody");
     tbody.innerHTML = list.length ? list.map(r => `
       <tr>
@@ -1075,7 +1228,7 @@
         <td class="num">${r.SWITCHED_OFF}</td>
         <td class="num">${r.NO_ANSWER}</td>
       </tr>`).join("")
-      : `<tr><td colspan="9" class="muted">No agents yet.</td></tr>`;
+      : `<tr><td colspan="9" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
@@ -1094,9 +1247,21 @@
     }).join("") : `<tr><td colspan="${isAdmin ? 5 : 4}" class="muted">Nothing scheduled.</td></tr>`;
   }
 
+  // recentFilter narrows Recent calls to one status (currently only ever
+  // "LEAD", set by clicking the Leads generated tile) without a fresh
+  // fetch — lastRecentDisp/lastRecentNames cache what load() last saw so
+  // applyRecentFilter() can just re-render from that.
+  let recentFilter = null;
+  let lastRecentDisp = [];
+  let lastRecentNames = {};
+
   function renderRecent(disp, names) {
+    lastRecentDisp = disp;
+    lastRecentNames = names;
+    const rows = recentFilter ? disp.filter(d => d.status === recentFilter) : disp;
+    show($("recentFilterChip"), !!recentFilter);
     const tbody = $("recentTable").querySelector("tbody");
-    tbody.innerHTML = disp.length ? disp.slice(0, 100).map(d => {
+    tbody.innerHTML = rows.length ? rows.slice(0, 100).map(d => {
       const m = metaFor(d.status);
       const lead = d.leads || {};
       const quality = d.lead_quality ? ` (${d.lead_quality.toLowerCase()})` : "";
@@ -1108,7 +1273,12 @@
         <td>${esc(names[d.agent_id] || "—")}</td>
         <td style="white-space:normal;max-width:280px">${esc(d.remarks || "")}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="muted">No calls in this period.</td></tr>`;
+    }).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="muted">${recentFilter ? "No leads in this period." : "No calls in this period."}</td></tr>`;
+  }
+
+  function applyRecentFilter(filter) {
+    recentFilter = filter;
+    renderRecent(lastRecentDisp, lastRecentNames);
   }
 
   function fmtDT(d) {
@@ -1382,6 +1552,119 @@
   // from v_batch_summary (backend/10_database_report.sql). Both run
   // under admin's own RLS, which is what makes the totals whole-pool
   // rather than scoped to admin's own assigned agents (admin has none).
+  // A readable message regardless of what shape a failure took — a
+  // Postgrest error has .message, but it's sometimes empty (a bare
+  // statement-timeout 500 can arrive with no message body at all — see
+  // backend/29_leads_batch_summary_idx.sql), so this falls through to
+  // .details/.hint before giving up and stringifying whatever it got.
+  // Without this, an error object with no usable .message rendered
+  // literally as the text "[object Object]".
+  function errText(e) {
+    return e?.message || e?.details || e?.hint || (typeof e === "string" ? e : JSON.stringify(e));
+  }
+
+  function fmtRupees(n) {
+    if (n == null) return "—";
+    return "₹" + Math.round(n).toLocaleString("en-IN");
+  }
+  function fmtDob(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d)) return iso;
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  // Same search_lead() RPC (backend/16_lead_search.sql) the app and web
+  // client already call — exact mobile/PAN match, whole database, no
+  // regard for who a lead is assigned to. Every call here is logged the
+  // same way an agent's own search is, under this admin's login, and
+  // counts against the same 30/hour cap. assigned_to is resolved to a
+  // login_id via assignAgents (populated by loadAssignmentsPanel, which
+  // has already run by the time an admin can see this admin-only card).
+  const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+  async function performCustomerLookup() {
+    const raw = $("custLookupInput").value.trim();
+    const errEl = $("custLookupError");
+    const resultsEl = $("custLookupResults");
+    errEl.textContent = "";
+
+    const compact = raw.replace(/[ -]/g, "");
+    const digitsOnly = raw.replace(/\D/g, "");
+    const looksLikeMobile = compact.length > 0 && /^[\d+]+$/.test(compact) && digitsOnly.length >= 10;
+    const mobile = looksLikeMobile ? digitsOnly.slice(-10) : null;
+    const pan = !looksLikeMobile ? (PAN_RE.test(compact.toUpperCase()) ? compact.toUpperCase() : null) : null;
+
+    if (!mobile && !pan) {
+      errEl.textContent = "Enter a valid 10-digit mobile number or PAN, e.g. ABCDE1234F.";
+      resultsEl.innerHTML = "";
+      return;
+    }
+
+    $("custLookupBtn").disabled = true;
+    resultsEl.innerHTML = '<p class="muted">Searching…</p>';
+    const params = {};
+    if (mobile) params.p_mobile = mobile;
+    if (pan) params.p_pan = pan;
+    const { data, error } = await sb.rpc("search_lead", params);
+    $("custLookupBtn").disabled = false;
+
+    if (error) {
+      errEl.textContent = errText(error);
+      resultsEl.innerHTML = "";
+      return;
+    }
+
+    const rows = data || [];
+    if (!rows.length) {
+      resultsEl.innerHTML = '<p class="muted">No match.</p>';
+      return;
+    }
+
+    // search_lead() bypasses leads RLS on purpose (whole-database lookup),
+    // but this profiles fetch does not — a manager gets a login_id back
+    // only for an agent actually theirs (manages_agent() in backend/09),
+    // same as everywhere else in this dashboard. A blank result here
+    // means either that agent isn't this manager's, or the id belongs to
+    // an admin/archived account; both render the same neutral fallback
+    // rather than guessing which.
+    const assignedIds = [...new Set(rows.map(l => l.assigned_to).filter(Boolean))];
+    let agentNames = {};
+    if (assignedIds.length) {
+      const { data: agentRows } = await sb.from("profiles").select("id, login_id").in("id", assignedIds);
+      (agentRows || []).forEach(a => { agentNames[a.id] = a.login_id; });
+    }
+
+    resultsEl.innerHTML = rows.map(l => {
+      const meta = l.last_status ? metaFor(l.last_status) : null;
+      const fields = [
+        ["Mobile", l.mobile],
+        ["PAN", (l.pan || "—").toUpperCase()],
+        ["Email", l.email || "—"],
+        ["DOB", fmtDob(l.dob)],
+        ["Annual Income Range", l.annual_income_range || "—"],
+        ["Company", l.company || "—"],
+        ["ICI Cr Lmt", fmtRupees(l.ici_cr_lmt)],
+        ["Address", l.address || "—"],
+        ["Batch", l.batch || "(no batch)"],
+        ["Assigned to", l.assigned_to ? (agentNames[l.assigned_to] || "an agent outside your view") : "Unassigned"],
+        ["Status", meta ? meta.label : "Never called"],
+        ["Callback at", l.callback_at ? fmtDT(new Date(l.callback_at)) : "—"],
+        ["Closed", l.is_closed ? "Yes" : "No"]
+      ];
+      return `
+        <div class="lookup-card">
+          <h3>${esc(l.name || "Name not provided")}</h3>
+          ${fields.map(([label, value]) => `
+            <div class="lf-row"><div class="l">${esc(label)}</div><div class="v">${esc(value)}</div></div>
+          `).join("")}
+        </div>`;
+    }).join("");
+  }
+
+  $("custLookupBtn").onclick = performCustomerLookup;
+  $("custLookupInput").onkeydown = e => { if (e.key === "Enter") performCustomerLookup(); };
+
   async function loadDatabaseStats() {
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
@@ -1389,45 +1672,87 @@
     const versionTbody = $("appVersionTable").querySelector("tbody");
     const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
-    try {
-      const [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes] = await Promise.all([
-        sb.from("leads").select("id", { count: "exact", head: true }),
-        sb.from("leads").select("id", { count: "exact", head: true }).gt("attempts", 0),
-        sb.from("leads").select("id", { count: "exact", head: true }).eq("attempts", 0),
-        sb.from("leads").select("id", { count: "exact", head: true }).eq("is_closed", true),
-        sb.from("call_dispositions").select("id", { count: "exact", head: true }),
-        sb.from("v_batch_summary").select("*"),
-        sb.from("v_sms_outcomes").select("*"),
-        sb.from("v_app_versions").select("*"),
-        sb.from("v_agent_contacts").select("*"),
-        sb.from("v_search_activity").select("*")
-      ]);
-      for (const r of [totalRes, calledRes, pendingRes, closedRes, attemptsRes, batchRes, smsRes, versionRes, contactRes, searchRes]) {
-        if (r.error) throw r.error;
-      }
 
-      const total = totalRes.count ?? 0;
-      const called = calledRes.count ?? 0;
-      const pendingPct = total ? (100 * (pendingRes.count ?? 0) / total).toFixed(1) : "0.0";
+    // Apply Card SMS delivery is scoped to the same Today/Last 7 days/
+    // Last 30 days/All time range as the tiles up top, not the whole
+    // table like the other Database-section reports below — it's a
+    // "is this working right now" diagnostic, so a device that was
+    // failing permission_denied last month but fixed itself since
+    // shouldn't still be flagged today. Queries the raw log rather
+    // than v_sms_outcomes (migration 24, which has no date filter) and
+    // aggregates client-side, the same way renderAgents/renderRecent
+    // build their tables from call_dispositions.
+    let smsQ = sb.from("sms_delivery_log")
+      .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    const smsSince = sinceIso();
+    if (smsSince) smsQ = smsQ.gte("created_at", smsSince);
 
+    // "estimated", not "exact": with 80k+ leads and growing, an exact
+    // count over a large table can blow Supabase's statement timeout —
+    // that used to come back as a bare 500 that threw and blanked this
+    // entire section, tables that had nothing to do with the slow query
+    // included. A planner estimate is instant regardless of table size,
+    // which is exactly right for a rounded KPI tile that already shows
+    // a 1-decimal percentage next to it.
+    //
+    // Promise.allSettled (not Promise.all) + a per-section check below,
+    // rather than one throw-on-first-error: a single slow/failing query
+    // — the leads count, or the v_batch_summary aggregate, still a real
+    // full-table scan no count strategy fixes, see backend/29 — now only
+    // blanks its own tile or table instead of every other one on the page.
+    const settled = await Promise.allSettled([
+      sb.from("leads").select("id", { count: "estimated", head: true }),
+      sb.from("leads").select("id", { count: "estimated", head: true }).gt("attempts", 0),
+      sb.from("leads").select("id", { count: "estimated", head: true }).eq("attempts", 0),
+      sb.from("leads").select("id", { count: "estimated", head: true }).eq("is_closed", true),
+      sb.from("call_dispositions").select("id", { count: "estimated", head: true }),
+      sb.from("v_batch_summary").select("*"),
+      smsQ,
+      sb.from("v_app_versions").select("*"),
+      sb.from("v_agent_contacts").select("*"),
+      sb.from("v_search_activity").select("*"),
+      sb.from("campaigns").select("*").order("name")
+    ]);
+    // allSettled never rejects, so unwrap each into the {data, count,
+    // error} shape the rendering below expects — a network-level
+    // rejection (not a Postgrest response) becomes a synthetic .error.
+    const [total, called, pending, closed, attempts, batch, sms, version, contact, search, camp] =
+      settled.map(r => r.status === "fulfilled" ? r.value : { error: r.reason });
+
+    if (total.error || called.error || pending.error || closed.error || attempts.error) {
+      tilesEl.innerHTML = '<span class="err">' +
+        esc(errText(total.error || called.error || pending.error || closed.error || attempts.error)) + "</span>";
+    } else {
+      const totalCount = total.count ?? 0;
+      const calledCount = called.count ?? 0;
+      const pendingPct = totalCount ? (100 * (pending.count ?? 0) / totalCount).toFixed(1) : "0.0";
       tilesEl.innerHTML = `
         <div class="tile"><div class="label">Total leads</div>
-          <div class="value">${total}</div>
+          <div class="value">${totalCount}</div>
           <div class="sub">every lead ever imported</div></div>
         <div class="tile"><div class="label">Called at least once</div>
-          <div class="value">${called}</div>
-          <div class="sub">${total ? (100 * called / total).toFixed(1) : "0.0"}% of total</div></div>
+          <div class="value">${calledCount}</div>
+          <div class="sub">${totalCount ? (100 * calledCount / totalCount).toFixed(1) : "0.0"}% of total</div></div>
         <div class="tile"><div class="label">Never called (pending)</div>
-          <div class="value">${pendingRes.count ?? 0}</div>
+          <div class="value">${pending.count ?? 0}</div>
           <div class="sub">${pendingPct}% of total</div></div>
         <div class="tile"><div class="label">Closed</div>
-          <div class="value">${closedRes.count ?? 0}</div>
+          <div class="value">${closed.count ?? 0}</div>
           <div class="sub">wrong no. / not interested / lead</div></div>
         <div class="tile"><div class="label">Total call attempts</div>
-          <div class="value">${attemptsRes.count ?? 0}</div>
+          <div class="value">${attempts.count ?? 0}</div>
           <div class="sub">all-time, every outcome</div></div>`;
+    }
 
-      const rows = batchRes.data || [];
+    campaigns = camp.error ? campaigns : (camp.data || []);
+    renderCampaignsTable();
+
+    if (batch.error) {
+      tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(errText(batch.error))}</td></tr>`;
+    } else {
+      const rows = batch.data || [];
       tbody.innerHTML = rows.length
         ? rows.map(b => `
           <tr>
@@ -1438,24 +1763,54 @@
             <td class="num">${b.closed}</td>
             <td>${esc(fmtDT(new Date(b.imported_at)))}</td>
             <td>${b.batch === "(no batch)"
+                ? '<span class="muted">unallotted</span>'
+                : `<select class="batch-campaign-select" data-batch="${esc(b.batch)}">
+                     <option value="">— unallotted —</option>
+                     ${campaigns.map(c => `<option value="${c.id}" ${c.id === b.campaign_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+                   </select>`}</td>
+            <td>${b.batch === "(no batch)"
                 ? '<span class="muted">always on</span>'
                 : `<button class="toggle-active ${b.is_active ? "ok" : "err"}"
                      data-batch="${esc(b.batch)}" data-active="${b.is_active}">
                      ${b.is_active ? "On" : "Off"}</button>`}</td>
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
-        : `<tr><td colspan="8" class="muted">No leads imported yet.</td></tr>`;
+        : `<tr><td colspan="9" class="muted">No leads imported yet.</td></tr>`;
+    }
 
+    if (sms.error) {
+      smsTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(sms.error))}</td></tr>`;
+    } else {
       // "sent" is the only outcome that means the text actually went out;
       // everything else — a denied permission, no carrier service, a
       // radio-off phone, an app exception — is a real device the Apply
       // Card message never reached. Broken down per agent (migration 24)
       // rather than totalled across everyone: one agent stuck on
       // permission_denied used to be invisible in a fleet-wide total
-      // that also included everyone else's successful sends. Sorted by
-      // agent then count already (v_sms_outcomes), so each agent's
-      // biggest failure mode is the top row under their name.
-      const smsRows = smsRes.data || [];
+      // that also included everyone else's successful sends. Grouped by
+      // agent+outcome here (client-side, from the raw log) rather than
+      // via v_sms_outcomes, so it can be scoped to the date range above;
+      // sorted the same way the view was — agent, then that agent's
+      // biggest failure mode on top.
+      const smsGroups = {};
+      for (const row of (sms.data || [])) {
+        const key = row.agent_id + "|" + row.outcome;
+        let g = smsGroups[key];
+        if (!g) {
+          g = smsGroups[key] = {
+            full_name: row.profiles && row.profiles.full_name,
+            login_id: row.profiles && row.profiles.login_id,
+            outcome: row.outcome,
+            total: 0,
+            most_recent: row.created_at
+          };
+        }
+        g.total++;
+        if (row.created_at > g.most_recent) g.most_recent = row.created_at;
+      }
+      const smsRows = Object.values(smsGroups)
+        .sort((a, b) => (a.full_name || a.login_id || "").localeCompare(b.full_name || b.login_id || "") || b.total - a.total);
+      $("smsRangeLabel").textContent = rangeLabel();
       smsTbody.innerHTML = smsRows.length
         ? smsRows.map(o => `
           <tr>
@@ -1464,14 +1819,18 @@
             <td class="num">${o.total}</td>
             <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
           </tr>`).join("")
-        : `<tr><td colspan="4" class="muted">No calls made yet on a build with this reporting.</td></tr>`;
+        : `<tr><td colspan="4" class="muted">No SMS attempts in this period.</td></tr>`;
+    }
 
+    if (version.error) {
+      versionTbody.innerHTML = `<tr><td colspan="6" class="err">${esc(errText(version.error))}</td></tr>`;
+    } else {
       // Green only for whichever version is the newest ANY agent has
       // actually reported — there's no fixed "latest" constant to compare
       // against here (that lives in the GitHub release, not this page),
       // so "up to date" means "matches the furthest-along phone we know
       // about," not a guarantee that's the true latest release.
-      const versionRows = versionRes.data || [];
+      const versionRows = version.data || [];
       const newest = versionRows.reduce((best, v) => {
         if (!v.app_version) return best;
         const parts = v.app_version.split(".").map(Number);
@@ -1528,8 +1887,12 @@
           }).join("")
         : `<tr><td colspan="6" class="muted">No active agents.</td></tr>`;
       if (!$("archivedPage").classList.contains("hidden")) renderArchivedPage();
+    }
 
-      const contactRows = (contactRes.data || []).filter(c => c.active);
+    if (contact.error) {
+      contactTbody.innerHTML = `<tr><td colspan="3" class="err">${esc(errText(contact.error))}</td></tr>`;
+    } else {
+      const contactRows = (contact.data || []).filter(c => c.active);
       contactTbody.innerHTML = contactRows.length
         ? contactRows.map(c => `
           <tr>
@@ -1538,11 +1901,15 @@
             <td class="${c.contact_number ? "" : "muted"}">${esc(c.contact_number || "Not set yet")}</td>
           </tr>`).join("")
         : `<tr><td colspan="3" class="muted">No active agents.</td></tr>`;
+    }
 
+    if (search.error) {
+      searchTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(search.error))}</td></tr>`;
+    } else {
       // A wall of zero-match rows, or a search count wildly out of line
       // with how many calls that agent makes, is what guessing looks
       // like — flag both in red so it isn't buried in an all-black table.
-      const searchRows = searchRes.data || [];
+      const searchRows = search.data || [];
       searchTbody.innerHTML = searchRows.length
         ? searchRows.map(s => `
           <tr>
@@ -1552,8 +1919,6 @@
             <td>${esc(fmtDT(new Date(s.last_search)))}</td>
           </tr>`).join("")
         : `<tr><td colspan="4" class="muted">No searches yet.</td></tr>`;
-    } catch (e) {
-      tilesEl.innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     }
   }
 
@@ -1570,6 +1935,81 @@
   // enough rather than the typed-name prompt below. batch_settings has no
   // row for a batch until the first toggle or import, hence upsert rather
   // than update.
+  function renderCampaignsTable() {
+    const tbody = $("campaignsTable").querySelector("tbody");
+    tbody.innerHTML = campaigns.length
+      ? campaigns.map(c => `
+        <tr>
+          <td>${esc(c.name)}</td>
+          <td><button class="toggle-campaign-active ${c.is_active ? "ok" : "err"}"
+                data-id="${c.id}" data-active="${c.is_active}">
+                ${c.is_active ? "On" : "Off"}</button></td>
+        </tr>`).join("")
+      : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
+  }
+
+  // Switching a campaign off doesn't touch batch_settings.campaign_id —
+  // claim_next_lead() checks the campaign's own is_active too, so turning
+  // it off here immediately stops serving every batch assigned to it,
+  // reversibly, without unassigning anything.
+  $("campaignsTable").addEventListener("click", async (e) => {
+    const toggle = e.target.closest(".toggle-campaign-active");
+    if (!toggle) return;
+    const id = Number(toggle.dataset.id);
+    const nextActive = toggle.dataset.active !== "true";
+    if (!nextActive && !confirm("Turn this campaign off? Every batch assigned to it stops being served immediately.")) return;
+
+    toggle.disabled = true;
+    try {
+      const { error } = await sb.from("campaigns").update({ is_active: nextActive }).eq("id", id);
+      if (error) throw error;
+      loadDatabaseStats();
+    } catch (err) {
+      alert("Could not change campaign status: " + (err.message || err));
+      toggle.disabled = false;
+    }
+  });
+
+  $("addCampaignBtn").onclick = async () => {
+    const input = $("newCampaignName");
+    const name = input.value.trim();
+    const errEl = $("campaignError");
+    errEl.textContent = "";
+    if (!name) { errEl.textContent = "Enter a campaign name."; return; }
+
+    $("addCampaignBtn").disabled = true;
+    try {
+      const { error } = await sb.from("campaigns").insert({ name });
+      if (error) throw error;
+      input.value = "";
+      loadDatabaseStats();
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+    }
+    $("addCampaignBtn").disabled = false;
+  };
+
+  // Assigning a batch to a campaign (or back to "— unallotted —") changes
+  // what claim_next_lead() will serve on the very next "Next lead" tap —
+  // same reversible-so-no-typed-prompt tier as the on/off toggle below,
+  // just a select's "change" event instead of a button's "click".
+  $("batchTable").addEventListener("change", async (e) => {
+    const select = e.target.closest(".batch-campaign-select");
+    if (!select) return;
+    const batch = select.dataset.batch;
+    const campaignId = select.value ? Number(select.value) : null;
+
+    select.disabled = true;
+    try {
+      const { error } = await sb.from("batch_settings")
+        .upsert({ batch, campaign_id: campaignId }, { onConflict: "batch" });
+      if (error) throw error;
+    } catch (err) {
+      alert("Could not change campaign: " + (err.message || err));
+    }
+    loadDatabaseStats();
+  });
+
   $("batchTable").addEventListener("click", async (e) => {
     const toggle = e.target.closest(".toggle-active");
     if (toggle) {
@@ -1673,6 +2113,8 @@
     if (renameBtn) { archivedEditMode = { id: renameBtn.dataset.agentId, mode: "rename" }; renderArchivedPage(); return; }
     const reassignBtn = e.target.closest(".reassign-agent-btn");
     if (reassignBtn) { archivedEditMode = { id: reassignBtn.dataset.agentId, mode: "reassign" }; renderArchivedPage(); return; }
+    const deleteBtn = e.target.closest(".delete-agent-btn");
+    if (deleteBtn) { onDeleteAgent(deleteBtn); return; }
     if (e.target.id === "renameCancelBtn" || e.target.id === "reassignCancelBtn") {
       archivedEditMode = null; renderArchivedPage(); return;
     }
@@ -1765,6 +2207,45 @@
     }
   }
 
+  // -----------------------------------------------------------------
+  // Permanently delete an archived agent with no call history — see
+  // supabase/functions/delete-agent for what "no call history" means and
+  // why an agent who has one can't go this way (reassign it first).
+  // -----------------------------------------------------------------
+  async function onDeleteAgent(btn) {
+    const agentId = btn.dataset.agentId;
+    const name = btn.dataset.agentName;
+    if (!confirm(
+      `Permanently delete "${name}"'s account? This only works if they ` +
+      `never placed a call, sent an SMS, or signed in — this cannot be ` +
+      `undone.`
+    )) return;
+
+    btn.disabled = true;
+    try {
+      const { data: sessionData } = await sb.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Your session has expired. Sign in again.");
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-agent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ agent_id: agentId })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status}).`);
+
+      loadDatabaseStats();
+    } catch (e) {
+      alert("Could not delete agent: " + (e.message || e));
+      btn.disabled = false;
+    }
+  }
+
   $("agentTable").addEventListener("click", (e) => {
     const link = e.target.closest(".link-btn");
     if (link) openAgentReport(link.dataset.agentId, link.dataset.agentName);
@@ -1786,6 +2267,7 @@
             <button class="reassign-agent-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Reassign history</button>
             <button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
                  data-name="${esc(v.full_name)}" data-active="false">Unarchive</button>
+            <button class="delete-agent-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">Delete</button>
           </td>
         </tr>`;
 
