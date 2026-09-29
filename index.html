@@ -608,6 +608,7 @@
 <div id="agentReportPage" class="hidden">
   <header>
     <h1 id="agentReportTitle">Agent report</h1>
+    <span id="agentReportCampaign" class="muted"></span>
     <span class="spacer"></span>
     <input type="date" id="agentReportDate" style="max-width:160px">
     <button id="backFromAgentReport">← Back to dashboard</button>
@@ -958,6 +959,21 @@
     const tbody = $("agentReportTable").querySelector("tbody");
     tbody.innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
     $("agentReportTiles").innerHTML = "";
+
+    // The agent's live current campaign, not scoped to the date picker
+    // below — this is "which campaign are they logged into right now",
+    // same current_campaign_id switch_campaign() writes to
+    // (backend/32_campaigns.sql). Fetched on its own, independent of the
+    // day's activity query below, so a failure here never blocks the rest
+    // of the report from rendering.
+    $("agentReportCampaign").textContent = "";
+    sb.from("profiles").select("current_campaign_id, campaigns(name)")
+      .eq("id", agentReportId).single()
+      .then(({ data }) => {
+        $("agentReportCampaign").textContent = data?.campaigns?.name
+          ? `Campaign: ${data.campaigns.name}`
+          : "No campaign picked";
+      });
 
     const { startIso, endIso } = istDayRangeUtc($("agentReportDate").value || istTodayString());
 
