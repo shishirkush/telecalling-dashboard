@@ -355,7 +355,11 @@
         (from v1.9.4) is per-install and stable across relaunches, unlike
         Device which is just a model name shared by every unit of that
         model — two agents showing the same Device ID in red really are
-        on the same physical phone, not just the same phone model. Archive
+        on the same physical phone, not just the same phone model.
+        Competing apps (from v1.14.0, disclosed in the app's privacy
+        policy) checks for a small, named list of competing financial-
+        referral apps only (GroMo, Zet, MyMoneyMantra currently) — never
+        a general inventory of everything installed. Archive
         an agent who has left — they immediately lose the ability to sign
         in or place calls, and any lead still assigned to them goes back
         to the pool for someone else to claim. Archived agents move to
@@ -369,6 +373,7 @@
             <th>Version</th>
             <th>Device</th>
             <th>Device ID</th>
+            <th>Competing apps</th>
             <th>Last reported</th>
             <th>Archive</th>
           </tr></thead>
@@ -1889,6 +1894,7 @@
             const looksLikeEmulator = !!v.device_model &&
               emulatorHints.some(h => v.device_model.toLowerCase().includes(h));
             const sharedDeviceId = !!v.device_id && deviceIdCounts[v.device_id] > 1;
+            const competingApps = v.competitor_apps || [];
             return `
           <tr>
             <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
@@ -1896,12 +1902,14 @@
               ${esc(v.app_version || "never reported")}</td>
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td class="${sharedDeviceId ? "err" : ""}" title="${sharedDeviceId ? "Same Device ID as another agent" : ""}">${esc(v.device_id || "—")}</td>
+            <td class="${competingApps.length ? "err" : "muted"}" title="${v.competitor_apps_checked_at ? "Checked " + esc(fmtDT(new Date(v.competitor_apps_checked_at))) : "Never checked yet"}">
+              ${competingApps.length ? esc(competingApps.join(", ")) : (v.competitor_apps_checked_at ? "None found" : "Not checked yet")}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
             <td><button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
                  data-name="${esc(v.full_name)}" data-active="true">Archive</button></td>
           </tr>`;
           }).join("")
-        : `<tr><td colspan="6" class="muted">No active agents.</td></tr>`;
+        : `<tr><td colspan="7" class="muted">No active agents.</td></tr>`;
       if (!$("archivedPage").classList.contains("hidden")) renderArchivedPage();
     }
 
