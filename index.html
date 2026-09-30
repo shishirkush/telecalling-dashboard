@@ -1573,11 +1573,21 @@
         const parsedDate = parseReportDate(rawDate);
         if (rawDate && !parsedDate) badDates++;
         const activation = normalizeActivation(pick(r, ["activation status", "activation"]));
-        const applicationId = (pick(r, ["application id", "app id"]) || "").trim() || null;
+        // Banks that don't issue an application id up front (INDUS/SBI/YES
+        // POP — see backend/36_bank_applications.sql) get typed as literal
+        // "N/A" in this column rather than left blank. Treating that text
+        // as a real id would make every N/A row for the same bank collide
+        // on (bank, application_id) and get deduped/upserted into ONE row,
+        // silently discarding distinct customers' applications.
+        const rawApplicationId = (pick(r, ["application id", "app id"]) || "").trim();
+        const applicationId = /^(n\.?\/?a\.?|none|-+)$/i.test(rawApplicationId) ? null : (rawApplicationId || null);
         const record = {
           bank: (pick(r, ["bank"]) || "").trim().toUpperCase(),
           phone: phone.replace(/\D/g, ""),
-          customer_name: (pick(r, ["customer", "customer name"]) || "Name not provided").trim(),
+          // "custmer" is this sheet's own recurring misspelling of the
+          // header, not a one-off typo — recognised alongside the correct
+          // spelling so it doesn't silently blank out every name again.
+          customer_name: (pick(r, ["customer", "customer name", "custmer"]) || "Name not provided").trim(),
           agent_id: agentId,
           application_id: applicationId,
           card_name: (pick(r, ["card name", "card"]) || "").trim() || null,
