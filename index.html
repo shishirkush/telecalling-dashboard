@@ -1590,13 +1590,29 @@
         if (applicationId) withKey.push(record); else withoutKey.push(record);
       });
 
+      // A single upsert can't target the same (bank, application_id) row
+      // twice in one request — Postgres rejects that with "ON CONFLICT DO
+      // UPDATE command cannot affect row a second time". The bank's own
+      // daily report can legitimately repeat an application (its status
+      // changed since an earlier row further up the same file), so
+      // collapse duplicates here instead of failing the whole upload —
+      // last occurrence wins, since that's the report's latest word on it.
+      let duplicatesCollapsed = 0;
+      const dedupedByKey = new Map();
+      for (const record of withKey) {
+        const key = record.bank + "|" + record.application_id;
+        if (dedupedByKey.has(key)) duplicatesCollapsed++;
+        dedupedByKey.set(key, record);
+      }
+      const dedupedWithKey = [...dedupedByKey.values()];
+
       if (!withKey.length && !withoutKey.length) {
         throw new Error("No row had both a recognised agent name and a phone number.");
       }
 
       let done = 0;
-      const total = withKey.length + withoutKey.length;
-      for (const chunk of chunkForUpload(withKey)) {
+      const total = dedupedWithKey.length + withoutKey.length;
+      for (const chunk of chunkForUpload(dedupedWithKey)) {
         const { error } = await sb.from("bank_applications").upsert(chunk, { onConflict: "bank,application_id" });
         if (error) throw error;
         done += chunk.length;
@@ -1611,6 +1627,7 @@
 
       $("bankAppsBulkStatus").innerHTML =
         `<span class="ok">Uploaded ${done} row(s).</span>` +
+        (duplicatesCollapsed ? ` <span class="muted">${duplicatesCollapsed} duplicate row(s) in the file collapsed — last one kept.</span>` : "") +
         (skippedNoAgent ? ` <span class="err">${skippedNoAgent} row(s) skipped — agent name didn't match an active agent.</span>` : "") +
         (skippedNoPhone ? ` <span class="muted">${skippedNoPhone} row(s) skipped — no phone number.</span>` : "") +
         (badDates ? ` <span class="muted">${badDates} date(s) unreadable, defaulted to today.</span>` : "");
