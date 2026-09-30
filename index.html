@@ -359,7 +359,10 @@
         Competing apps (from v1.14.0, disclosed in the app's privacy
         policy) checks for a small, named list of competing financial-
         referral apps only (GroMo, Zet, MyMoneyMantra currently) — never
-        a general inventory of everything installed. Archive
+        a general inventory of everything installed. This check only runs
+        on the native Android app; no browser API can detect installed
+        native apps, so an agent on the web client always shows
+        "Web app — can't be checked" here, not a pending result. Archive
         an agent who has left — they immediately lose the ability to sign
         in or place calls, and any lead still assigned to them goes back
         to the pool for someone else to claim. Archived agents move to
@@ -1895,6 +1898,16 @@
               emulatorHints.some(h => v.device_model.toLowerCase().includes(h));
             const sharedDeviceId = !!v.device_id && deviceIdCounts[v.device_id] > 1;
             const competingApps = v.competitor_apps || [];
+            // Only the native Android app can query PackageManager for
+            // named installed packages — no browser API exposes that to
+            // a web page, so an agent on the web client (WEB_APP_VERSION
+            // suffix in webapp/index.html) will NEVER report this, not
+            // just "not yet". Distinguishing the two here so this column
+            // doesn't read as a pending check that's actually impossible.
+            const isWebClient = !!v.app_version && /-web$/.test(v.app_version);
+            const competingAppsCell = competingApps.length
+              ? esc(competingApps.join(", "))
+              : isWebClient ? "Web app — can't be checked" : (v.competitor_apps_checked_at ? "None found" : "Not checked yet");
             return `
           <tr>
             <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
@@ -1903,7 +1916,7 @@
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
             <td class="${sharedDeviceId ? "err" : ""}" title="${sharedDeviceId ? "Same Device ID as another agent" : ""}">${esc(v.device_id || "—")}</td>
             <td class="${competingApps.length ? "err" : "muted"}" title="${v.competitor_apps_checked_at ? "Checked " + esc(fmtDT(new Date(v.competitor_apps_checked_at))) : "Never checked yet"}">
-              ${competingApps.length ? esc(competingApps.join(", ")) : (v.competitor_apps_checked_at ? "None found" : "Not checked yet")}</td>
+              ${competingAppsCell}</td>
             <td>${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
             <td><button class="toggle-agent-active" data-agent-id="${esc(v.id)}"
                  data-name="${esc(v.full_name)}" data-active="true">Archive</button></td>
