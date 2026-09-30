@@ -463,14 +463,16 @@
       <div class="hidden" id="bankAppsBulkCard" style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px">
         <h3 style="margin:0 0 6px">Bulk upload (admin only)</h3>
         <p class="muted" style="margin-top:0">
-          Same column layout as <strong>Download CSV</strong> above —
-          Bank, Date, Application ID, Phone, Customer, Agent, VKYC
-          Status, Card Name, Final, Activation Status. Agent is matched
-          by name (case-insensitive) against active agents; an unmatched
-          name is skipped and reported below, not guessed. A row whose
-          Bank + Application ID already exists updates that row in
-          place (including approval/activation) — this is meant to be
-          the bank's own report re-uploaded daily, not a one-time import.
+          Header row must be an <strong>exact</strong> match (case-insensitive) —
+          BANK, DATE, APPLICATION ID, MOBILE, CUSTOMER, AGENT, VKYC STATUS,
+          CARD NAME, APPROVE/DECLINE, ACTIVATION — same layout as
+          <strong>Download CSV</strong> above. A mismatched header is
+          rejected outright rather than uploaded with wrong data. Agent
+          is matched by name (case-insensitive) against active agents;
+          an unmatched name is skipped and reported below, not guessed.
+          A row whose Bank + Application ID already exists updates that
+          row in place (including approval/activation) — this is meant
+          to be the bank's own report re-uploaded daily, not a one-time import.
         </p>
         <input type="file" id="bankAppsBulkFile" accept=".csv,text/csv">
         <button class="primary" id="bankAppsBulkUpload" disabled>Upload</button>
@@ -1526,7 +1528,7 @@
   // Same column order as the original manually-typed MIS, so a file
   // downloaded here and later re-uploaded through Bulk upload round-trips.
   $("bankAppsExportBtn").onclick = () => {
-    const header = ["Bank", "Date", "Application ID", "Phone", "Customer", "Agent", "VKYC Status", "Card Name", "Final", "Activation Status"];
+    const header = ["Bank", "Date", "Application ID", "Mobile", "Customer", "Agent", "VKYC Status", "Card Name", "Approve/Decline", "Activation"];
     const lines = [header.join(",")];
     bankApps.forEach(r => {
       lines.push([
@@ -1595,24 +1597,15 @@
     return { status: "PENDING", note: s };
   }
 
-  // Every column this uploader reads, and the header spellings recognised
-  // for each. If a column's header doesn't match any of these, every row
-  // would otherwise silently fall back to a default (blank/"Name not
-  // provided" customer, "PENDING" status, etc.) instead of failing —
-  // exactly what happened with the "custmer" typo. Checked once up front
-  // against the file's actual header row so a mismatch is a loud error,
-  // not a batch of wrong data.
-  const BANK_APPS_EXPECTED_COLUMNS = [
-    { label: "Bank",              keys: ["bank"] },
-    { label: "Date",              keys: ["date"] },
-    { label: "Application ID",    keys: ["application id", "app id"] },
-    { label: "Phone",             keys: ["phone", "phone number", "mobile", "mobile no"] },
-    { label: "Customer",          keys: ["customer", "customer name", "custmer"] },
-    { label: "Agent",             keys: ["agent"] },
-    { label: "VKYC Status",       keys: ["vkyc status", "vkyc"] },
-    { label: "Card Name",         keys: ["card name", "card"] },
-    { label: "Final",             keys: ["final", "approval", "approval status"] },
-    { label: "Activation Status", keys: ["activation status", "activation"] }
+  // Header row must match this exactly (case-insensitive, after
+  // parseCsv's own trim/lowercase) — no alias spellings, no tolerance for
+  // typos like the sheet's earlier "custmer". A mismatch here used to
+  // mean every row silently fell back to a wrong default ("Name not
+  // provided", "PENDING", etc.); now it's a hard error naming exactly
+  // what's wrong, before any row is touched.
+  const BANK_APPS_HEADER = [
+    "bank", "date", "application id", "mobile", "customer", "agent",
+    "vkyc status", "card name", "approve/decline", "activation"
   ];
 
   $("bankAppsBulkFile").onchange = () => { $("bankAppsBulkUpload").disabled = !$("bankAppsBulkFile").files.length; };
@@ -1627,13 +1620,14 @@
       if (!rows.length) throw new Error("No data rows found.");
 
       const headerKeys = Object.keys(rows[0]);
-      const missingColumns = BANK_APPS_EXPECTED_COLUMNS
-        .filter(c => !c.keys.some(k => headerKeys.includes(k)))
-        .map(c => c.label);
-      if (missingColumns.length) {
+      const missingColumns = BANK_APPS_HEADER.filter(h => !headerKeys.includes(h));
+      const unexpectedColumns = headerKeys.filter(h => !BANK_APPS_HEADER.includes(h));
+      if (missingColumns.length || unexpectedColumns.length) {
         throw new Error(
-          `Header doesn't match the expected layout — missing column(s): ${missingColumns.join(", ")}. ` +
-          `Found: ${headerKeys.join(", ") || "(no header row)"}. Fix the header row and try again.`
+          `Header must exactly match: ${BANK_APPS_HEADER.join(", ")}. ` +
+          (missingColumns.length ? `Missing: ${missingColumns.join(", ")}. ` : "") +
+          (unexpectedColumns.length ? `Unexpected: ${unexpectedColumns.join(", ")}. ` : "") +
+          `Found: ${headerKeys.join(", ") || "(no header row)"}.`
         );
       }
 
@@ -1646,35 +1640,32 @@
       let skippedNoAgent = 0, skippedNoPhone = 0, badDates = 0;
       const withKey = [], withoutKey = [];
       rows.forEach(r => {
-        const phone = digits(pick(r, ["phone", "phone number", "mobile", "mobile no"]));
+        const phone = digits(r["mobile"]);
         if (!phone) { skippedNoPhone++; return; }
-        const agentName = pick(r, ["agent"]);
+        const agentName = r["agent"];
         const agentId = agentName ? agentByName[agentName.trim().toLowerCase()] : null;
         if (!agentId) { skippedNoAgent++; return; }
-        const rawDate = pick(r, ["date"]);
+        const rawDate = r["date"];
         const parsedDate = parseReportDate(rawDate);
         if (rawDate && !parsedDate) badDates++;
-        const activation = normalizeActivation(pick(r, ["activation status", "activation"]));
+        const activation = normalizeActivation(r["activation"]);
         // Banks that don't issue an application id up front (INDUS/SBI/YES
         // POP — see backend/36_bank_applications.sql) get typed as literal
         // "N/A" in this column rather than left blank. Treating that text
         // as a real id would make every N/A row for the same bank collide
         // on (bank, application_id) and get deduped/upserted into ONE row,
         // silently discarding distinct customers' applications.
-        const rawApplicationId = (pick(r, ["application id", "app id"]) || "").trim();
+        const rawApplicationId = (r["application id"] || "").trim();
         const applicationId = /^(n\.?\/?a\.?|none|-+)$/i.test(rawApplicationId) ? null : (rawApplicationId || null);
         const record = {
-          bank: (pick(r, ["bank"]) || "").trim().toUpperCase(),
+          bank: (r["bank"] || "").trim().toUpperCase(),
           phone: phone.replace(/\D/g, ""),
-          // "custmer" is this sheet's own recurring misspelling of the
-          // header, not a one-off typo — recognised alongside the correct
-          // spelling so it doesn't silently blank out every name again.
-          customer_name: (pick(r, ["customer", "customer name", "custmer"]) || "Name not provided").trim(),
+          customer_name: (r["customer"] || "Name not provided").trim(),
           agent_id: agentId,
           application_id: applicationId,
-          card_name: (pick(r, ["card name", "card"]) || "").trim() || null,
-          vkyc_status: normalizeVkyc(pick(r, ["vkyc status", "vkyc"])),
-          approval_status: normalizeApproval(pick(r, ["final", "approval", "approval status"])),
+          card_name: (r["card name"] || "").trim() || null,
+          vkyc_status: normalizeVkyc(r["vkyc status"]),
+          approval_status: normalizeApproval(r["approve/decline"]),
           activation_status: activation.status,
           activation_note: activation.note,
           applied_at: parsedDate || new Date().toISOString().slice(0, 10)
