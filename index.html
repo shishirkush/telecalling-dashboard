@@ -219,6 +219,7 @@
     <h1>Telecalling — Supervisor</h1>
     <span class="spacer"></span>
     <span id="whoami" class="muted"></span>
+    <button id="openBankApps">Bank Applications</button>
     <button id="openLoginActivity">Login Activity</button>
     <button id="refresh">Refresh</button>
     <button id="signOut">Sign out</button>
@@ -426,60 +427,6 @@
       </div>
     </div>
 
-    <div class="card" id="bankAppsCard">
-      <h2>Bank applications</h2>
-      <p class="muted" style="margin-top:0">
-        What happens to a lead after an agent gets them to apply for a
-        card — the daily bank MIS, now a live table instead of a
-        hand-typed Excel file. Agent sets name/application id/card/mobile
-        at submission and can correct those any time; bank and VKYC
-        status are fixed once logged. <strong>Approval and activation are
-        set by admin only</strong> — a manager's view here is read-only
-        for those two columns. Same date range as the tiles above
-        (applied date), except All time, which is the whole history.
-      </p>
-      <div class="table-wrap scroll-y">
-        <table id="bankAppsTable">
-          <thead><tr>
-            <th>Agent</th>
-            <th>Bank</th>
-            <th>Customer</th>
-            <th>Mobile</th>
-            <th>Application ID</th>
-            <th>Card</th>
-            <th>VKYC</th>
-            <th>Approval</th>
-            <th>Activation</th>
-            <th>Applied</th>
-            <th id="baDeleteHead">Delete</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-        <button class="secondary" id="bankAppsExportBtn">Download CSV</button>
-        <span id="bankAppsStatus" class="muted"></span>
-      </div>
-      <div class="hidden" id="bankAppsBulkCard" style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px">
-        <h3 style="margin:0 0 6px">Bulk upload (admin only)</h3>
-        <p class="muted" style="margin-top:0">
-          Header row must be an <strong>exact</strong> match (case-insensitive) —
-          BANK, DATE, APPLICATION ID, MOBILE, CUSTOMER, AGENT, VKYC STATUS,
-          CARD NAME, APPROVE/DECLINE, ACTIVATION — same layout as
-          <strong>Download CSV</strong> above. A mismatched header is
-          rejected outright rather than uploaded with wrong data. Agent
-          is matched by name (case-insensitive) against active agents;
-          an unmatched name is skipped and reported below, not guessed.
-          A row whose Bank + Application ID already exists updates that
-          row in place (including approval/activation) — this is meant
-          to be the bank's own report re-uploaded daily, not a one-time import.
-        </p>
-        <input type="file" id="bankAppsBulkFile" accept=".csv,text/csv">
-        <button class="primary" id="bankAppsBulkUpload" disabled>Upload</button>
-        <p id="bankAppsBulkStatus" class="muted"></p>
-      </div>
-    </div>
-
     <div class="card">
       <h2>Call outcomes</h2>
       <div id="chart"></div>
@@ -667,6 +614,74 @@
   </main>
 </div>
 
+<!-- =============== BANK APPLICATIONS (separate page) =============== -->
+<div id="bankAppsPage" class="hidden">
+  <header>
+    <h1>Bank applications</h1>
+    <span class="spacer"></span>
+    <button id="backFromBankApps">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="filters" role="group" aria-label="Date range" id="bankAppsFilters">
+      <button data-days="0"  aria-pressed="true">Today</button>
+      <button data-days="7"  aria-pressed="false">Last 7 days</button>
+      <button data-days="30" aria-pressed="false">Last 30 days</button>
+      <button data-days="-1" aria-pressed="false">All time</button>
+    </div>
+    <div class="card" id="bankAppsCard">
+      <p class="muted" style="margin-top:0">
+        What happens to a lead after an agent gets them to apply for a
+        card — the daily bank MIS, now a live table instead of a
+        hand-typed Excel file. Agent sets name/application id/card/mobile
+        at submission and can correct those any time; bank and VKYC
+        status are fixed once logged. <strong>Approval and activation are
+        set by admin only</strong> — a manager's view here is read-only
+        for those two columns, and grouped by month, newest first.
+      </p>
+      <div class="table-wrap scroll-y">
+        <table id="bankAppsTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Bank</th>
+            <th>Customer</th>
+            <th>Mobile</th>
+            <th>Application ID</th>
+            <th>Card</th>
+            <th>VKYC</th>
+            <th>Approval</th>
+            <th>Activation</th>
+            <th>Applied</th>
+            <th id="baDeleteHead">Delete</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <button class="secondary" id="bankAppsExportBtn">Download CSV</button>
+        <span id="bankAppsStatus" class="muted"></span>
+      </div>
+      <div class="hidden" id="bankAppsBulkCard" style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px">
+        <h3 style="margin:0 0 6px">Bulk upload (admin only)</h3>
+        <p class="muted" style="margin-top:0">
+          Header row must be an <strong>exact</strong> match (case-insensitive) —
+          BANK, DATE, APPLICATION ID, MOBILE, CUSTOMER, AGENT, VKYC STATUS,
+          CARD NAME, APPROVE/DECLINE, ACTIVATION — same layout as
+          <strong>Download CSV</strong> above. A mismatched header is
+          rejected outright rather than uploaded with wrong data. Agent
+          is matched by name (case-insensitive) against active agents;
+          an unmatched name is skipped and reported below, not guessed.
+          A row whose Bank + Application ID already exists updates that
+          row in place (including approval/activation) — this is meant
+          to be the bank's own report re-uploaded daily, not a one-time import.
+        </p>
+        <input type="file" id="bankAppsBulkFile" accept=".csv,text/csv">
+        <button class="primary" id="bankAppsBulkUpload" disabled>Upload</button>
+        <p id="bankAppsBulkStatus" class="muted"></p>
+      </div>
+    </div>
+  </main>
+</div>
+
 <!-- =============== AGENT DAILY REPORT (separate page) =============== -->
 <div id="agentReportPage" class="hidden">
   <header>
@@ -739,6 +754,9 @@
   // week by default, unlike the main dashboard's KPI tiles where
   // "Today" is the sensible default.
   let loginActivityRangeDays = 7;
+  // Independent of rangeDays too, now that Bank applications is its own
+  // page rather than sharing the main dashboard's filter row.
+  let bankAppsRangeDays = 0;
   let isAdmin = false;
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
   let activeAgents = [];   // same shape, active === true — reassign-history target list
@@ -933,6 +951,28 @@
     };
   });
 
+  // Bank applications gets its own page rather than an inline collapsible
+  // section — the daily MIS table can get long, and re-uploading a report
+  // shouldn't require scrolling past every other card first. Same
+  // full-page-swap pattern as Login Activity / Agent report above.
+  $("openBankApps").onclick = () => {
+    show($("app"), false);
+    show($("bankAppsPage"), true);
+    loadBankApps();
+  };
+  $("backFromBankApps").onclick = () => {
+    show($("bankAppsPage"), false);
+    show($("app"), true);
+  };
+  document.querySelectorAll("#bankAppsFilters button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#bankAppsFilters button")
+        .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      bankAppsRangeDays = Number(b.dataset.days);
+      loadBankApps();
+    };
+  });
+
   // 9 AM–7 PM IST is the same window claim_next_lead() enforces server-
   // side (backend/21_login_log_and_calling_hours.sql) — flagging it here
   // too makes "did someone log in/out outside calling hours" visible at
@@ -1016,6 +1056,7 @@
     show($("app"), false);
     show($("archivedPage"), false);
     show($("loginActivityPage"), false);
+    show($("bankAppsPage"), false);
     show($("agentReportPage"), true);
     loadAgentReport();
   }
@@ -1196,20 +1237,16 @@
   // sinceIso()'s UTC instant would shift "today" by a day for any browser
   // west of UTC (local midnight IST is already 18:30 the PREVIOUS day in
   // UTC). This stays in the browser's own local calendar throughout.
-  function sinceDateStr() {
-    if (rangeDays < 0) return null;
+  function sinceDateStr(days) {
+    if (days < 0) return null;
     const d = new Date();
-    if (rangeDays > 0) d.setDate(d.getDate() - rangeDays);
+    if (days > 0) d.setDate(d.getDate() - days);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
   async function load() {
     try {
       const since = sinceIso();
-
-      let bankAppsQ = sb.from("v_bank_applications").select("*");
-      const sinceDate = sinceDateStr();
-      if (sinceDate) bankAppsQ = bankAppsQ.gte("applied_at", sinceDate);
 
       // Only the admin account's browser ever requests the raw numbers —
       // a regular (non-admin) supervisor's session never receives them
@@ -1225,7 +1262,7 @@
         .limit(2000);
       if (since) q = q.gte("called_at", since);
 
-      const [dispRes, profRes, cbRes, bankAppsRes] = await Promise.all([
+      const [dispRes, profRes, cbRes] = await Promise.all([
         q,
         sb.from("profiles").select("id, full_name, role"),
         sb.from("leads")
@@ -1233,8 +1270,7 @@
           .not("callback_at", "is", null)
           .eq("is_closed", false)
           .order("callback_at", { ascending: true })
-          .limit(200),
-        bankAppsQ
+          .limit(200)
       ]);
 
       if (dispRes.error) throw dispRes.error;
@@ -1248,12 +1284,6 @@
       renderAgents(disp, profs, names);
       renderCallbacks(cbRes.data || [], names);
       renderRecent(disp, names);
-      if (bankAppsRes.error) {
-        $("bankAppsTable").querySelector("tbody").innerHTML =
-          `<tr><td colspan="10" class="err">${esc(errText(bankAppsRes.error))}</td></tr>`;
-      } else {
-        renderBankApps(bankAppsRes.data || []);
-      }
     } catch (e) {
       alert("Could not load data: " + (e.message || e));
     }
@@ -1422,7 +1452,7 @@
     const tbody = $("bankAppsTable").querySelector("tbody");
     const colCount = isAdmin ? 11 : 10;
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="${colCount}" class="muted">No bank applications ${rangeDays < 0 ? "yet" : "in this period"}.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${colCount}" class="muted">No bank applications ${bankAppsRangeDays < 0 ? "yet" : "in this period"}.</td></tr>`;
       return;
     }
     // Rows arrive applied_at desc (v_bank_applications' own order), so
@@ -1468,6 +1498,22 @@
     tbody.innerHTML = parts.join("");
   }
 
+  async function loadBankApps() {
+    const tbody = $("bankAppsTable").querySelector("tbody");
+    tbody.innerHTML = `<tr><td colspan="${isAdmin ? 11 : 10}" class="muted">Loading…</td></tr>`;
+    let q = sb.from("v_bank_applications").select("*");
+    // applied_at is a `date` column — see sinceDateStr()'s own comment on
+    // why this can't just reuse sinceIso()'s UTC instant.
+    const sinceDate = sinceDateStr(bankAppsRangeDays);
+    if (sinceDate) q = q.gte("applied_at", sinceDate);
+    const { data, error } = await q;
+    if (error) {
+      tbody.innerHTML = `<tr><td colspan="${isAdmin ? 11 : 10}" class="err">${esc(errText(error))}</td></tr>`;
+      return;
+    }
+    renderBankApps(data || []);
+  }
+
   async function deleteBankApp(id) {
     const row = document.querySelector(`tr[data-ba-id="${id}"]`);
     const btn = row && row.querySelector(".ba-delete-btn");
@@ -1476,7 +1522,7 @@
       const { error } = await sb.from("bank_applications").delete().eq("id", id);
       if (error) throw error;
       $("bankAppsStatus").textContent = "Deleted 1 application.";
-      load();
+      loadBankApps();
     } catch (err) {
       alert("Could not delete: " + (err.message || err));
       if (btn) btn.disabled = false;
@@ -1706,7 +1752,7 @@
         (skippedNoAgent ? ` <span class="err">${skippedNoAgent} row(s) skipped — agent name didn't match an active agent.</span>` : "") +
         (skippedNoPhone ? ` <span class="muted">${skippedNoPhone} row(s) skipped — no phone number.</span>` : "") +
         (badDates ? ` <span class="muted">${badDates} date(s) unreadable, defaulted to today.</span>` : "");
-      load();
+      loadBankApps();
     } catch (e) {
       $("bankAppsBulkStatus").innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
     } finally {
