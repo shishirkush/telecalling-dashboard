@@ -425,6 +425,57 @@
       </div>
     </div>
 
+    <div class="card" id="bankAppsCard">
+      <h2>Bank applications</h2>
+      <p class="muted" style="margin-top:0">
+        What happens to a lead after an agent gets them to apply for a
+        card — the daily bank MIS, now a live table instead of a
+        hand-typed Excel file. Agent sets name/application id/card/mobile
+        at submission and can correct those any time; bank and VKYC
+        status are fixed once logged. <strong>Approval and activation are
+        set by admin only</strong> — a manager's view here is read-only
+        for those two columns. Same date range as the tiles above
+        (applied date), except All time, which is the whole history.
+      </p>
+      <div class="table-wrap scroll-y">
+        <table id="bankAppsTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Bank</th>
+            <th>Customer</th>
+            <th>Mobile</th>
+            <th>Application ID</th>
+            <th>Card</th>
+            <th>VKYC</th>
+            <th>Approval</th>
+            <th>Activation</th>
+            <th>Applied</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <button class="secondary" id="bankAppsExportBtn">Download CSV</button>
+        <span id="bankAppsStatus" class="muted"></span>
+      </div>
+      <div class="hidden" id="bankAppsBulkCard" style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px">
+        <h3 style="margin:0 0 6px">Bulk upload (admin only)</h3>
+        <p class="muted" style="margin-top:0">
+          Same column layout as <strong>Download CSV</strong> above —
+          Bank, Date, Application ID, Phone, Customer, Agent, VKYC
+          Status, Card Name, Final, Activation Status. Agent is matched
+          by name (case-insensitive) against active agents; an unmatched
+          name is skipped and reported below, not guessed. A row whose
+          Bank + Application ID already exists updates that row in
+          place (including approval/activation) — this is meant to be
+          the bank's own report re-uploaded daily, not a one-time import.
+        </p>
+        <input type="file" id="bankAppsBulkFile" accept=".csv,text/csv">
+        <button class="primary" id="bankAppsBulkUpload" disabled>Upload</button>
+        <p id="bankAppsBulkStatus" class="muted"></p>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Call outcomes</h2>
       <div id="chart"></div>
@@ -688,6 +739,7 @@
   let archivedAgents = []; // [{id, full_name, app_version, device_model, app_version_reported_at, ...}]
   let activeAgents = [];   // same shape, active === true — reassign-history target list
   let campaigns = [];      // [{id, name, is_active}] — also the Campaign <select> options in the batch table
+  let bankApps = [];       // rows from v_bank_applications currently loaded — also what Download CSV exports
   let archivedEditMode = null; // {id, mode: "rename" | "reassign"} | null
 
   const STATUS_META = [
@@ -700,6 +752,13 @@
   ];
   const metaFor = w => STATUS_META.find(s => s.wire === w) ||
                        { label: w || "—", varName: "--text-muted" };
+
+  // Mirrors backend/36_bank_applications.sql's enums exactly.
+  const VKYC_LABEL = { PENDING: "Pending", BIO_KYC: "Bio KYC", BIO_KYC_DONE: "Bio KYC Done", DONE: "Done", DECLINED: "Declined" };
+  const APPROVAL_OPTS = ["PENDING", "APPROVED", "DECLINED", "DONE"];
+  const APPROVAL_LABEL = { PENDING: "Pending", APPROVED: "Approved", DECLINED: "Declined", DONE: "Done" };
+  const ACTIVATION_OPTS = ["PENDING", "ACTIVE", "INACTIVE"];
+  const ACTIVATION_LABEL = { PENDING: "Pending", ACTIVE: "Active", INACTIVE: "Inactive" };
 
   // Supervisors sign in with the same login ID the agents use, not an email.
   // GoTrue is email/password underneath, so the ID is expanded to
@@ -1099,6 +1158,11 @@
     show($("assignmentsCard"), isAdmin);
     show($("campaignsCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
+    // Bank applications table itself is visible to every supervisor
+    // (managers can download the daily report too); only the bulk
+    // upload sub-section and the approval/activation editors within
+    // the table are admin-only, gated per-cell in renderBankApps().
+    show($("bankAppsBulkCard"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
     // regular supervisor login sees everything else on this dashboard but
     // not customer contact details, so the numbers aren't sitting exposed
@@ -1123,9 +1187,24 @@
   }
   function sinceIso() { return isoSince(rangeDays); }
 
+  // applied_at is a `date` column, not timestamptz — comparing it against
+  // sinceIso()'s UTC instant would shift "today" by a day for any browser
+  // west of UTC (local midnight IST is already 18:30 the PREVIOUS day in
+  // UTC). This stays in the browser's own local calendar throughout.
+  function sinceDateStr() {
+    if (rangeDays < 0) return null;
+    const d = new Date();
+    if (rangeDays > 0) d.setDate(d.getDate() - rangeDays);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
   async function load() {
     try {
       const since = sinceIso();
+
+      let bankAppsQ = sb.from("v_bank_applications").select("*");
+      const sinceDate = sinceDateStr();
+      if (sinceDate) bankAppsQ = bankAppsQ.gte("applied_at", sinceDate);
 
       // Only the admin account's browser ever requests the raw numbers —
       // a regular (non-admin) supervisor's session never receives them
@@ -1141,7 +1220,7 @@
         .limit(2000);
       if (since) q = q.gte("called_at", since);
 
-      const [dispRes, profRes, cbRes] = await Promise.all([
+      const [dispRes, profRes, cbRes, bankAppsRes] = await Promise.all([
         q,
         sb.from("profiles").select("id, full_name, role"),
         sb.from("leads")
@@ -1149,7 +1228,8 @@
           .not("callback_at", "is", null)
           .eq("is_closed", false)
           .order("callback_at", { ascending: true })
-          .limit(200)
+          .limit(200),
+        bankAppsQ
       ]);
 
       if (dispRes.error) throw dispRes.error;
@@ -1163,6 +1243,12 @@
       renderAgents(disp, profs, names);
       renderCallbacks(cbRes.data || [], names);
       renderRecent(disp, names);
+      if (bankAppsRes.error) {
+        $("bankAppsTable").querySelector("tbody").innerHTML =
+          `<tr><td colspan="10" class="err">${esc(errText(bankAppsRes.error))}</td></tr>`;
+      } else {
+        renderBankApps(bankAppsRes.data || []);
+      }
     } catch (e) {
       alert("Could not load data: " + (e.message || e));
     }
@@ -1309,6 +1395,232 @@
     return d.toLocaleString(undefined,
       { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
   }
+
+  // applied_at comes back as a plain "YYYY-MM-DD" string (a `date`
+  // column, not timestamptz) — built from the parts directly rather
+  // than through `new Date(iso)`, which parses a bare date as UTC
+  // midnight and can print as the previous day west of UTC.
+  function fmtDateOnly(iso) {
+    const [y, m, d] = String(iso || "").split("-").map(Number);
+    if (!y || !m || !d) return String(iso || "—");
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  // -----------------------------------------------------------------
+  // Bank applications — the daily bank MIS (backend/36_bank_applications.sql).
+  // Table itself is visible to every supervisor; approval/activation are
+  // editable here only for admin (enforced server-side regardless of
+  // what this renders) — a manager sees the same two columns as plain text.
+  // -----------------------------------------------------------------
+  function renderBankApps(rows) {
+    bankApps = rows;
+    const tbody = $("bankAppsTable").querySelector("tbody");
+    tbody.innerHTML = rows.length ? rows.map(r => `
+      <tr data-ba-id="${r.id}">
+        <td>${esc(r.agent_name || "—")}</td>
+        <td>${esc(r.bank)}</td>
+        <td>${esc(r.customer_name)}</td>
+        <td>${esc(r.phone)}</td>
+        <td>${esc(r.application_id || "—")}</td>
+        <td>${esc(r.card_name || "—")}</td>
+        <td>${esc(VKYC_LABEL[r.vkyc_status] || r.vkyc_status)}</td>
+        <td>${isAdmin ? `<select class="ba-approval-select" data-id="${r.id}">
+              ${APPROVAL_OPTS.map(o => `<option value="${o}" ${o === r.approval_status ? "selected" : ""}>${esc(APPROVAL_LABEL[o])}</option>`).join("")}
+            </select>` : esc(APPROVAL_LABEL[r.approval_status] || r.approval_status)}</td>
+        <td>${isAdmin ? `
+              <select class="ba-activation-select" data-id="${r.id}">
+                ${ACTIVATION_OPTS.map(o => `<option value="${o}" ${o === r.activation_status ? "selected" : ""}>${esc(ACTIVATION_LABEL[o])}</option>`).join("")}
+              </select>
+              <input class="ba-note-input" data-id="${r.id}" value="${esc(r.activation_note || "")}"
+                     placeholder="note" style="width:90px; margin-top:4px; display:block">`
+            : esc(ACTIVATION_LABEL[r.activation_status] || r.activation_status) + (r.activation_note ? ` (${esc(r.activation_note)})` : "")}</td>
+        <td>${esc(fmtDateOnly(r.applied_at))}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="10" class="muted">No bank applications ${rangeDays < 0 ? "yet" : "in this period"}.</td></tr>`;
+  }
+
+  async function saveBankAppStatus(id) {
+    const row = document.querySelector(`tr[data-ba-id="${id}"]`);
+    if (!row) return;
+    const approvalEl = row.querySelector(".ba-approval-select");
+    const activationEl = row.querySelector(".ba-activation-select");
+    const noteEl = row.querySelector(".ba-note-input");
+    if (!approvalEl || !activationEl) return;
+    const controls = row.querySelectorAll("select, input");
+    controls.forEach(el => el.disabled = true);
+    try {
+      const { error } = await sb.rpc("update_bank_application_status", {
+        p_id: Number(id),
+        p_approval_status: approvalEl.value,
+        p_activation_status: activationEl.value,
+        p_activation_note: (noteEl && noteEl.value.trim()) || null
+      });
+      if (error) throw error;
+    } catch (err) {
+      alert("Could not update approval/activation: " + (err.message || err));
+    }
+    controls.forEach(el => el.disabled = false);
+  }
+
+  $("bankAppsTable").addEventListener("change", (e) => {
+    const el = e.target.closest(".ba-approval-select, .ba-activation-select, .ba-note-input");
+    if (el) saveBankAppStatus(el.dataset.id);
+  });
+
+  function csvField(v) {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  // Same column order as the original manually-typed MIS, so a file
+  // downloaded here and later re-uploaded through Bulk upload round-trips.
+  $("bankAppsExportBtn").onclick = () => {
+    const header = ["Bank", "Date", "Application ID", "Phone", "Customer", "Agent", "VKYC Status", "Card Name", "Final", "Activation Status"];
+    const lines = [header.join(",")];
+    bankApps.forEach(r => {
+      lines.push([
+        r.bank, r.applied_at, r.application_id || "", r.phone, r.customer_name, r.agent_name || "",
+        VKYC_LABEL[r.vkyc_status] || r.vkyc_status,
+        r.card_name || "",
+        APPROVAL_LABEL[r.approval_status] || r.approval_status,
+        r.activation_note ? `${ACTIVATION_LABEL[r.activation_status]} (${r.activation_note})` : (ACTIVATION_LABEL[r.activation_status] || r.activation_status)
+      ].map(csvField).join(","));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bank_applications_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    $("bankAppsStatus").textContent = `Downloaded ${bankApps.length} row(s).`;
+  };
+
+  // Excel serial → date. Serial 25569 is 1970-01-01; this is the same
+  // mixed-format problem the original hand-typed sheet had in its Date
+  // column (some cells real date serials, some pasted as text) — handled
+  // here instead of assuming the uploaded CSV is already clean.
+  function excelSerialToDate(serial) {
+    const d = new Date((Number(serial) - 25569) * 86400000);
+    return isNaN(d) ? null : d;
+  }
+  function parseReportDate(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return null;
+    if (/^\d{4,6}$/.test(s)) {
+      const d = excelSerialToDate(s);
+      if (d) return d.toISOString().slice(0, 10);
+    }
+    const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (dmy) {
+      const day = +dmy[1], mo = +dmy[2], yr = +dmy[3];
+      const d = new Date(yr, mo - 1, day);
+      if (d.getFullYear() === yr && d.getMonth() === mo - 1 && d.getDate() === day) {
+        return `${yr}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) return s;
+    return null;
+  }
+  function normalizeVkyc(raw) {
+    const s = String(raw || "").trim().toUpperCase().replace(/\s+/g, "_");
+    if (s === "DECLINE") return "DECLINED";
+    return ["PENDING", "BIO_KYC", "BIO_KYC_DONE", "DONE", "DECLINED"].includes(s) ? s : "PENDING";
+  }
+  function normalizeApproval(raw) {
+    const s = String(raw || "").trim().toUpperCase();
+    if (s === "DECLINE") return "DECLINED";
+    return ["PENDING", "APPROVED", "DECLINED", "DONE"].includes(s) ? s : "PENDING";
+  }
+  function normalizeActivation(raw) {
+    const s = String(raw || "").trim();
+    const upper = s.toUpperCase();
+    if (upper === "" || upper === "PENDING") return { status: "PENDING", note: null };
+    if (upper === "ACTIVE") return { status: "ACTIVE", note: null };
+    if (upper === "INACTIVE") return { status: "INACTIVE", note: null };
+    if (upper.includes("ACTIVE")) return { status: "ACTIVE", note: s };
+    return { status: "PENDING", note: s };
+  }
+
+  $("bankAppsBulkFile").onchange = () => { $("bankAppsBulkUpload").disabled = !$("bankAppsBulkFile").files.length; };
+
+  $("bankAppsBulkUpload").onclick = async () => {
+    const file = $("bankAppsBulkFile").files[0];
+    if (!file) return;
+    $("bankAppsBulkUpload").disabled = true;
+    $("bankAppsBulkStatus").textContent = "Reading file…";
+    try {
+      const rows = parseCsv(await file.text());
+      if (!rows.length) throw new Error("No data rows found.");
+
+      const { data: agentRows, error: agentErr } = await sb.from("profiles")
+        .select("id, full_name").eq("role", "agent");
+      if (agentErr) throw agentErr;
+      const agentByName = {};
+      (agentRows || []).forEach(a => { if (a.full_name) agentByName[a.full_name.trim().toLowerCase()] = a.id; });
+
+      let skippedNoAgent = 0, skippedNoPhone = 0, badDates = 0;
+      const withKey = [], withoutKey = [];
+      rows.forEach(r => {
+        const phone = digits(pick(r, ["phone", "phone number", "mobile", "mobile no"]));
+        if (!phone) { skippedNoPhone++; return; }
+        const agentName = pick(r, ["agent"]);
+        const agentId = agentName ? agentByName[agentName.trim().toLowerCase()] : null;
+        if (!agentId) { skippedNoAgent++; return; }
+        const rawDate = pick(r, ["date"]);
+        const parsedDate = parseReportDate(rawDate);
+        if (rawDate && !parsedDate) badDates++;
+        const activation = normalizeActivation(pick(r, ["activation status", "activation"]));
+        const applicationId = (pick(r, ["application id", "app id"]) || "").trim() || null;
+        const record = {
+          bank: (pick(r, ["bank"]) || "").trim().toUpperCase(),
+          phone: phone.replace(/\D/g, ""),
+          customer_name: (pick(r, ["customer", "customer name"]) || "Name not provided").trim(),
+          agent_id: agentId,
+          application_id: applicationId,
+          card_name: (pick(r, ["card name", "card"]) || "").trim() || null,
+          vkyc_status: normalizeVkyc(pick(r, ["vkyc status", "vkyc"])),
+          approval_status: normalizeApproval(pick(r, ["final", "approval", "approval status"])),
+          activation_status: activation.status,
+          activation_note: activation.note,
+          applied_at: parsedDate || new Date().toISOString().slice(0, 10)
+        };
+        if (applicationId) withKey.push(record); else withoutKey.push(record);
+      });
+
+      if (!withKey.length && !withoutKey.length) {
+        throw new Error("No row had both a recognised agent name and a phone number.");
+      }
+
+      let done = 0;
+      const total = withKey.length + withoutKey.length;
+      for (const chunk of chunkForUpload(withKey)) {
+        const { error } = await sb.from("bank_applications").upsert(chunk, { onConflict: "bank,application_id" });
+        if (error) throw error;
+        done += chunk.length;
+        $("bankAppsBulkStatus").textContent = `Uploaded ${done} of ${total}…`;
+      }
+      for (const chunk of chunkForUpload(withoutKey)) {
+        const { error } = await sb.from("bank_applications").insert(chunk);
+        if (error) throw error;
+        done += chunk.length;
+        $("bankAppsBulkStatus").textContent = `Uploaded ${done} of ${total}…`;
+      }
+
+      $("bankAppsBulkStatus").innerHTML =
+        `<span class="ok">Uploaded ${done} row(s).</span>` +
+        (skippedNoAgent ? ` <span class="err">${skippedNoAgent} row(s) skipped — agent name didn't match an active agent.</span>` : "") +
+        (skippedNoPhone ? ` <span class="muted">${skippedNoPhone} row(s) skipped — no phone number.</span>` : "") +
+        (badDates ? ` <span class="muted">${badDates} date(s) unreadable, defaulted to today.</span>` : "");
+      load();
+    } catch (e) {
+      $("bankAppsBulkStatus").innerHTML = '<span class="err">' + esc(e.message || e) + "</span>";
+    } finally {
+      $("bankAppsBulkUpload").disabled = false;
+    }
+  };
 
   // -----------------------------------------------------------------
   // CSV import
