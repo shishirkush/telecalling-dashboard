@@ -139,6 +139,7 @@
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
   th { color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.ba-month-row td { background: var(--grid); color: var(--text-muted); font-weight: 600; white-space: nowrap; }
   tbody tr:last-child td { border-bottom: none; }
 
   .chip {
@@ -450,6 +451,7 @@
             <th>Approval</th>
             <th>Activation</th>
             <th>Applied</th>
+            <th id="baDeleteHead">Delete</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1163,6 +1165,7 @@
     // upload sub-section and the approval/activation editors within
     // the table are admin-only, gated per-cell in renderBankApps().
     show($("bankAppsBulkCard"), isAdmin);
+    show($("baDeleteHead"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
     // regular supervisor login sees everything else on this dashboard but
     // not customer contact details, so the numbers aren't sitting exposed
@@ -1415,7 +1418,29 @@
   function renderBankApps(rows) {
     bankApps = rows;
     const tbody = $("bankAppsTable").querySelector("tbody");
-    tbody.innerHTML = rows.length ? rows.map(r => `
+    const colCount = isAdmin ? 11 : 10;
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="${colCount}" class="muted">No bank applications ${rangeDays < 0 ? "yet" : "in this period"}.</td></tr>`;
+      return;
+    }
+    // Rows arrive applied_at desc (v_bank_applications' own order), so
+    // grouping while walking the list linearly keeps months in order
+    // without a separate sort pass.
+    const monthCounts = {};
+    rows.forEach(r => { const m = r.applied_at.slice(0, 7); monthCounts[m] = (monthCounts[m] || 0) + 1; });
+    const monthLabel = m => {
+      const [y, mo] = m.split("-").map(Number);
+      return new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    };
+    let lastMonth = null;
+    const parts = [];
+    rows.forEach(r => {
+      const month = r.applied_at.slice(0, 7);
+      if (month !== lastMonth) {
+        lastMonth = month;
+        parts.push(`<tr class="ba-month-row"><td colspan="${colCount}"><strong>${esc(monthLabel(month))}</strong> — ${monthCounts[month]} application(s)</td></tr>`);
+      }
+      parts.push(`
       <tr data-ba-id="${r.id}">
         <td>${esc(r.agent_name || "—")}</td>
         <td>${esc(r.bank)}</td>
@@ -1435,8 +1460,25 @@
                      placeholder="note" style="width:90px; margin-top:4px; display:block">`
             : esc(ACTIVATION_LABEL[r.activation_status] || r.activation_status) + (r.activation_note ? ` (${esc(r.activation_note)})` : "")}</td>
         <td>${esc(fmtDateOnly(r.applied_at))}</td>
-      </tr>`).join("")
-      : `<tr><td colspan="10" class="muted">No bank applications ${rangeDays < 0 ? "yet" : "in this period"}.</td></tr>`;
+        ${isAdmin ? `<td><button class="secondary ba-delete-btn" data-id="${r.id}">Delete</button></td>` : ""}
+      </tr>`);
+    });
+    tbody.innerHTML = parts.join("");
+  }
+
+  async function deleteBankApp(id) {
+    const row = document.querySelector(`tr[data-ba-id="${id}"]`);
+    const btn = row && row.querySelector(".ba-delete-btn");
+    if (btn) btn.disabled = true;
+    try {
+      const { error } = await sb.from("bank_applications").delete().eq("id", id);
+      if (error) throw error;
+      $("bankAppsStatus").textContent = "Deleted 1 application.";
+      load();
+    } catch (err) {
+      alert("Could not delete: " + (err.message || err));
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function saveBankAppStatus(id) {
@@ -1465,6 +1507,15 @@
   $("bankAppsTable").addEventListener("change", (e) => {
     const el = e.target.closest(".ba-approval-select, .ba-activation-select, .ba-note-input");
     if (el) saveBankAppStatus(el.dataset.id);
+  });
+
+  $("bankAppsTable").addEventListener("click", (e) => {
+    const btn = e.target.closest(".ba-delete-btn");
+    if (!btn) return;
+    const row = btn.closest("tr[data-ba-id]");
+    const app = bankApps.find(r => String(r.id) === row.dataset.baId);
+    const who = app ? `${app.customer_name} (${app.bank})` : "this application";
+    if (confirm(`Delete ${who}? This cannot be undone.`)) deleteBankApp(btn.dataset.id);
   });
 
   function csvField(v) {
@@ -1544,6 +1595,26 @@
     return { status: "PENDING", note: s };
   }
 
+  // Every column this uploader reads, and the header spellings recognised
+  // for each. If a column's header doesn't match any of these, every row
+  // would otherwise silently fall back to a default (blank/"Name not
+  // provided" customer, "PENDING" status, etc.) instead of failing —
+  // exactly what happened with the "custmer" typo. Checked once up front
+  // against the file's actual header row so a mismatch is a loud error,
+  // not a batch of wrong data.
+  const BANK_APPS_EXPECTED_COLUMNS = [
+    { label: "Bank",              keys: ["bank"] },
+    { label: "Date",              keys: ["date"] },
+    { label: "Application ID",    keys: ["application id", "app id"] },
+    { label: "Phone",             keys: ["phone", "phone number", "mobile", "mobile no"] },
+    { label: "Customer",          keys: ["customer", "customer name", "custmer"] },
+    { label: "Agent",             keys: ["agent"] },
+    { label: "VKYC Status",       keys: ["vkyc status", "vkyc"] },
+    { label: "Card Name",         keys: ["card name", "card"] },
+    { label: "Final",             keys: ["final", "approval", "approval status"] },
+    { label: "Activation Status", keys: ["activation status", "activation"] }
+  ];
+
   $("bankAppsBulkFile").onchange = () => { $("bankAppsBulkUpload").disabled = !$("bankAppsBulkFile").files.length; };
 
   $("bankAppsBulkUpload").onclick = async () => {
@@ -1554,6 +1625,17 @@
     try {
       const rows = parseCsv(await file.text());
       if (!rows.length) throw new Error("No data rows found.");
+
+      const headerKeys = Object.keys(rows[0]);
+      const missingColumns = BANK_APPS_EXPECTED_COLUMNS
+        .filter(c => !c.keys.some(k => headerKeys.includes(k)))
+        .map(c => c.label);
+      if (missingColumns.length) {
+        throw new Error(
+          `Header doesn't match the expected layout — missing column(s): ${missingColumns.join(", ")}. ` +
+          `Found: ${headerKeys.join(", ") || "(no header row)"}. Fix the header row and try again.`
+        );
+      }
 
       const { data: agentRows, error: agentErr } = await sb.from("profiles")
         .select("id, full_name").eq("role", "agent");
@@ -1600,32 +1682,25 @@
         if (applicationId) withKey.push(record); else withoutKey.push(record);
       });
 
-      // A single upsert can't target the same (bank, application_id) row
-      // twice in one request — Postgres rejects that with "ON CONFLICT DO
-      // UPDATE command cannot affect row a second time". The bank's own
-      // daily report can legitimately repeat an application (its status
-      // changed since an earlier row further up the same file), so
-      // collapse duplicates here instead of failing the whole upload —
-      // last occurrence wins, since that's the report's latest word on it.
-      let duplicatesCollapsed = 0;
-      const dedupedByKey = new Map();
-      for (const record of withKey) {
-        const key = record.bank + "|" + record.application_id;
-        if (dedupedByKey.has(key)) duplicatesCollapsed++;
-        dedupedByKey.set(key, record);
-      }
-      const dedupedWithKey = [...dedupedByKey.values()];
-
       if (!withKey.length && !withoutKey.length) {
         throw new Error("No row had both a recognised agent name and a phone number.");
       }
 
+      // Nothing is collapsed or dropped client-side — every row that made
+      // it this far gets uploaded, including a repeated (bank,
+      // application_id): that's the bank's own report correcting itself
+      // partway through the same file, and both entries should reach the
+      // database. A single request can't target the same conflict row
+      // twice though ("ON CONFLICT DO UPDATE command cannot affect row a
+      // second time"), so keyed rows upsert one at a time — Postgres
+      // itself then applies them in file order, last one wins, same
+      // outcome as a batch upsert would give for the non-repeated rows.
       let done = 0;
-      const total = dedupedWithKey.length + withoutKey.length;
-      for (const chunk of chunkForUpload(dedupedWithKey)) {
-        const { error } = await sb.from("bank_applications").upsert(chunk, { onConflict: "bank,application_id" });
+      const total = withKey.length + withoutKey.length;
+      for (const record of withKey) {
+        const { error } = await sb.from("bank_applications").upsert([record], { onConflict: "bank,application_id" });
         if (error) throw error;
-        done += chunk.length;
+        done++;
         $("bankAppsBulkStatus").textContent = `Uploaded ${done} of ${total}…`;
       }
       for (const chunk of chunkForUpload(withoutKey)) {
@@ -1637,7 +1712,6 @@
 
       $("bankAppsBulkStatus").innerHTML =
         `<span class="ok">Uploaded ${done} row(s).</span>` +
-        (duplicatesCollapsed ? ` <span class="muted">${duplicatesCollapsed} duplicate row(s) in the file collapsed — last one kept.</span>` : "") +
         (skippedNoAgent ? ` <span class="err">${skippedNoAgent} row(s) skipped — agent name didn't match an active agent.</span>` : "") +
         (skippedNoPhone ? ` <span class="muted">${skippedNoPhone} row(s) skipped — no phone number.</span>` : "") +
         (badDates ? ` <span class="muted">${badDates} date(s) unreadable, defaulted to today.</span>` : "");
