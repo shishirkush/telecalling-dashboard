@@ -721,7 +721,7 @@
             <th>Event</th>
             <th>Lead</th>
             <th>Detail</th>
-            <th>Gap</th>
+            <th>Duration</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1092,7 +1092,7 @@
     const [loginRes, attemptRes, dispRes] = await Promise.all([
       sb.from("login_log").select("event, platform, occurred_at")
         .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
-      sb.from("call_attempts").select("lead_id, attempted_at, leads(name" + (isAdmin ? ", mobile" : "") + ")")
+      sb.from("call_attempts").select("lead_id, attempted_at, duration_secs, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
       sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
@@ -1138,7 +1138,8 @@
       const mobileNote = isAdmin && d.leads?.mobile ? ` (${esc(d.leads.mobile)})` : "";
       rows.push({
         time: d.called_at, type: "save", lead: (d.leads?.name || "—") + mobileNote,
-        detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs
+        detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs,
+        durationSecs: matched ? matched.duration_secs : null
       });
     });
     attempts.forEach(a => {
@@ -1161,14 +1162,13 @@
 
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
-      const fastGap = r.gapMs != null && r.gapMs < 40000;
       const typeLabel = { login: "Login", logout: "Logout", app_opened: "App opened", call: "Call attempt", save: "Saved outcome" }[r.type];
       return `<tr>
         <td class="${outside ? "err" : ""}">${esc(fmtIstTime(r.time))}${outside ? " · outside hours" : ""}</td>
         <td class="${r.type === "login" ? "ok" : r.type === "logout" ? "err" : ""}">${esc(typeLabel)}</td>
         <td>${esc(r.lead)}</td>
         <td class="muted">${esc(r.detail)}</td>
-        <td class="${fastGap ? "err" : ""}">${fmtGap(r.gapMs)}</td>
+        <td>${fmtGap(r.durationSecs != null ? r.durationSecs * 1000 : null)}</td>
       </tr>`;
     }).join("") : `<tr><td colspan="5" class="muted">No activity on this day.</td></tr>`;
   }
