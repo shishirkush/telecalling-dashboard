@@ -219,6 +219,8 @@
     <h1>Telecalling — Supervisor</h1>
     <span class="spacer"></span>
     <span id="whoami" class="muted"></span>
+    <button id="openCallbacks">Callbacks</button>
+    <button id="openLeadsPage">Leads</button>
     <button id="openBankApps">Bank Applications</button>
     <button id="openLoginActivity">Login Activity</button>
     <button id="refresh">Refresh</button>
@@ -682,6 +684,61 @@
   </main>
 </div>
 
+<!-- =============== CALLBACKS (separate page) =============== -->
+<div id="callbacksPage" class="hidden">
+  <header>
+    <h1>Callbacks</h1>
+    <span class="spacer"></span>
+    <button id="backFromCallbacks">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="filters" role="group" aria-label="Callback filter" id="callbacksFilters">
+      <button data-f="all" aria-pressed="true">All pending</button>
+      <button data-f="overdue" aria-pressed="false">Overdue</button>
+      <button data-f="upcoming" aria-pressed="false">Today &amp; upcoming</button>
+    </div>
+    <div class="card">
+      <p id="callbacksSummary" class="muted" style="margin-top:0"></p>
+      <div class="table-wrap">
+        <table id="callbacksPageTable">
+          <thead><tr>
+            <th>Time</th><th>Name</th><th id="cbpMobileHead">Mobile</th><th>Company</th><th>Agent</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- =============== LEADS (separate page) =============== -->
+<div id="leadsPage" class="hidden">
+  <header>
+    <h1>Leads</h1>
+    <span class="spacer"></span>
+    <button id="backFromLeads">← Back to dashboard</button>
+  </header>
+  <main>
+    <div class="filters" role="group" aria-label="Date range" id="leadsFilters">
+      <button data-days="0"  aria-pressed="false">Today</button>
+      <button data-days="7"  aria-pressed="true">Last 7 days</button>
+      <button data-days="30" aria-pressed="false">Last 30 days</button>
+      <button data-days="-1" aria-pressed="false">All time</button>
+    </div>
+    <div class="card">
+      <p id="leadsSummary" class="muted" style="margin-top:0"></p>
+      <div class="table-wrap">
+        <table id="leadsPageTable">
+          <thead><tr>
+            <th>Time</th><th>Agent</th><th>Name</th><th id="lpMobileHead">Mobile</th><th>Company</th><th>Strength</th><th>Remarks</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
 <!-- =============== AGENT DAILY REPORT (separate page) =============== -->
 <div id="agentReportPage" class="hidden">
   <header>
@@ -856,10 +913,9 @@
     const tile = e.target.closest("[data-tile]");
     if (!tile) return;
     if (tile.dataset.tile === "leads") {
-      applyRecentFilter("LEAD");
-      openSection($("recentCallsHeading"));
+      openLeadsPage();
     } else if (tile.dataset.tile === "callbacks") {
-      openSection($("callbacksHeading"));
+      openCallbacksPage();
     }
   });
   $("tiles").addEventListener("keydown", (e) => {
@@ -973,6 +1029,166 @@
     };
   });
 
+  // -----------------------------------------------------------------
+  // Callbacks and Leads — full pages, every row, grouped by date. The
+  // dashboard sections they replace were capped (a 520px scroll box, a
+  // 200-row query, 100 rows for Recent calls) and undated, so a long
+  // backlog looked like "only a few". These page through the whole
+  // result 1000 rows at a time instead of trusting a single request.
+  // -----------------------------------------------------------------
+  async function fetchAllPages(build) {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await build(from, from + 999);
+      if (error) throw error;
+      out.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return out;
+  }
+  async function agentNameMap() {
+    const { data } = await sb.from("profiles").select("id, full_name");
+    return Object.fromEntries((data || []).map(p => [p.id, p.full_name || "—"]));
+  }
+  const dayKey = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const dayLabel = d => d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+  const timeOnly = d => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+  let callbacksFilter = "all";
+  let leadsPageRangeDays = 7;
+
+  async function loadCallbacksPage() {
+    const tbody = $("callbacksPageTable").querySelector("tbody");
+    const cols = isAdmin ? 5 : 4;
+    show($("cbpMobileHead"), isAdmin);
+    tbody.innerHTML = '<tr><td colspan="' + cols + '" class="muted">Loading…</td></tr>';
+    try {
+      const sel = isAdmin ? "id, name, mobile, company, callback_at, assigned_to" : "id, name, company, callback_at, assigned_to";
+      const [rows, names] = await Promise.all([
+        fetchAllPages((a, b) => sb.from("leads").select(sel)
+          .not("callback_at", "is", null).eq("is_closed", false)
+          .order("callback_at", { ascending: true }).order("id", { ascending: true }).range(a, b)),
+        agentNameMap()
+      ]);
+      const now = Date.now();
+      const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+      const overdueTotal = rows.filter(r => new Date(r.callback_at).getTime() < now).length;
+      const shown = rows.filter(r => {
+        const t = new Date(r.callback_at).getTime();
+        if (callbacksFilter === "overdue") return t < now;
+        if (callbacksFilter === "upcoming") return t >= startOfToday.getTime();
+        return true;
+      });
+      $("callbacksSummary").textContent =
+        rows.length + " pending callback(s), " + overdueTotal + " overdue. Showing " + shown.length + ", earliest first, grouped by day.";
+      if (!shown.length) { tbody.innerHTML = '<tr><td colspan="' + cols + '" class="muted">Nothing here.</td></tr>'; return; }
+      const counts = {};
+      shown.forEach(r => { const k = dayKey(new Date(r.callback_at)); counts[k] = (counts[k] || 0) + 1; });
+      let last = null;
+      const parts = [];
+      shown.forEach(r => {
+        const due = new Date(r.callback_at);
+        const k = dayKey(due);
+        if (k !== last) {
+          last = k;
+          parts.push('<tr class="ba-month-row"><td colspan="' + cols + '"><strong>' + esc(dayLabel(due)) + '</strong> — ' + counts[k] + ' callback(s)</td></tr>');
+        }
+        const late = due.getTime() < now;
+        parts.push('<tr>' +
+          '<td class="' + (late ? "err" : "") + '">' + esc(timeOnly(due)) + (late ? " · overdue" : "") + '</td>' +
+          '<td>' + esc(r.name) + '</td>' +
+          (isAdmin ? '<td>' + esc(r.mobile || "—") + '</td>' : "") +
+          '<td>' + esc(r.company || "—") + '</td>' +
+          '<td>' + esc(names[r.assigned_to] || "—") + '</td>' +
+          '</tr>');
+      });
+      tbody.innerHTML = parts.join("");
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="' + cols + '" class="err">' + esc(errText(e)) + '</td></tr>';
+    }
+  }
+
+  async function loadLeadsPage() {
+    const tbody = $("leadsPageTable").querySelector("tbody");
+    const cols = isAdmin ? 7 : 6;
+    show($("lpMobileHead"), isAdmin);
+    tbody.innerHTML = '<tr><td colspan="' + cols + '" class="muted">Loading…</td></tr>';
+    try {
+      const lc = isAdmin ? "name, mobile, company" : "name, company";
+      const since = isoSince(leadsPageRangeDays);
+      const [rows, names] = await Promise.all([
+        fetchAllPages((a, b) => {
+          let q = sb.from("call_dispositions")
+            .select("id, status, lead_quality, remarks, called_at, agent_id, leads(" + lc + ")")
+            .eq("status", "LEAD")
+            .order("called_at", { ascending: false }).order("id", { ascending: false }).range(a, b);
+          if (since) q = q.gte("called_at", since);
+          return q;
+        }),
+        agentNameMap()
+      ]);
+      $("leadsSummary").textContent = rows.length + " lead(s), newest first, grouped by day.";
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="' + cols + '" class="muted">No leads in this period.</td></tr>'; return; }
+      const counts = {};
+      rows.forEach(r => { const k = dayKey(new Date(r.called_at)); counts[k] = (counts[k] || 0) + 1; });
+      let last = null;
+      const parts = [];
+      rows.forEach(r => {
+        const t = new Date(r.called_at);
+        const k = dayKey(t);
+        if (k !== last) {
+          last = k;
+          parts.push('<tr class="ba-month-row"><td colspan="' + cols + '"><strong>' + esc(dayLabel(t)) + '</strong> — ' + counts[k] + ' lead(s)</td></tr>');
+        }
+        const lead = r.leads || {};
+        const q = r.lead_quality ? r.lead_quality.charAt(0) + r.lead_quality.slice(1).toLowerCase() : "—";
+        parts.push('<tr>' +
+          '<td>' + esc(timeOnly(t)) + '</td>' +
+          '<td>' + esc(names[r.agent_id] || "—") + '</td>' +
+          '<td>' + esc(lead.name || "—") + '</td>' +
+          (isAdmin ? '<td>' + esc(lead.mobile || "—") + '</td>' : "") +
+          '<td>' + esc(lead.company || "—") + '</td>' +
+          '<td>' + esc(q) + '</td>' +
+          '<td style="white-space:normal">' + esc(r.remarks || "") + '</td>' +
+          '</tr>');
+      });
+      tbody.innerHTML = parts.join("");
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="' + cols + '" class="err">' + esc(errText(e)) + '</td></tr>';
+    }
+  }
+
+  function openCallbacksPage() {
+    show($("app"), false);
+    show($("callbacksPage"), true);
+    loadCallbacksPage();
+  }
+  function openLeadsPage() {
+    show($("app"), false);
+    show($("leadsPage"), true);
+    loadLeadsPage();
+  }
+  $("openCallbacks").onclick = openCallbacksPage;
+  $("openLeadsPage").onclick = openLeadsPage;
+  $("backFromCallbacks").onclick = () => { show($("callbacksPage"), false); show($("app"), true); };
+  $("backFromLeads").onclick = () => { show($("leadsPage"), false); show($("app"), true); };
+  document.querySelectorAll("#callbacksFilters button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#callbacksFilters button")
+        .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      callbacksFilter = b.dataset.f;
+      loadCallbacksPage();
+    };
+  });
+  document.querySelectorAll("#leadsFilters button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#leadsFilters button")
+        .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      leadsPageRangeDays = Number(b.dataset.days);
+      loadLeadsPage();
+    };
+  });
+
   // 9 AM–7 PM IST is the same window claim_next_lead() enforces server-
   // side (backend/21_login_log_and_calling_hours.sql) — flagging it here
   // too makes "did someone log in/out outside calling hours" visible at
@@ -1057,6 +1273,8 @@
     show($("archivedPage"), false);
     show($("loginActivityPage"), false);
     show($("bankAppsPage"), false);
+    show($("callbacksPage"), false);
+    show($("leadsPage"), false);
     show($("agentReportPage"), true);
     loadAgentReport();
   }
@@ -1303,14 +1521,14 @@
       <div class="tile"><div class="label">Calls made</div>
         <div class="value">${total}</div>
         <div class="sub">${rangeLabel()}</div></div>
-      <div class="tile" data-tile="leads" role="button" tabindex="0" title="Show these calls in Recent calls">
+      <div class="tile" data-tile="leads" role="button" tabindex="0" title="Open the full Leads page">
         <div class="label">Leads generated</div>
         <div class="value">${leads}</div>
         <div class="sub">${disp.filter(d => d.lead_quality === "HOT").length} hot</div></div>
       <div class="tile"><div class="label">Conversion</div>
         <div class="value">${conv}%</div>
         <div class="sub">leads ÷ calls</div></div>
-      <div class="tile" data-tile="callbacks" role="button" tabindex="0" title="Show the Callbacks due list">
+      <div class="tile" data-tile="callbacks" role="button" tabindex="0" title="Open the full Callbacks page">
         <div class="label">Callbacks pending</div>
         <div class="value">${callbacks.length}</div>
         <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>`;
