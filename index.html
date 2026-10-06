@@ -653,7 +653,7 @@
             <th>Approval</th>
             <th>Activation</th>
             <th>Applied</th>
-            <th id="baDeleteHead">Delete</th>
+            <th id="baDeleteHead">Edit / Delete</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1710,7 +1710,7 @@
                      placeholder="note" style="width:90px; margin-top:4px; display:block">`
             : esc(ACTIVATION_LABEL[r.activation_status] || r.activation_status) + (r.activation_note ? ` (${esc(r.activation_note)})` : "")}</td>
         <td>${esc(fmtDateOnly(r.applied_at))}</td>
-        ${isAdmin ? `<td><button class="secondary ba-delete-btn" data-id="${r.id}">Delete</button></td>` : ""}
+        ${isAdmin ? `<td><button class="secondary ba-edit-btn" data-id="${r.id}" style="display:block; margin-bottom:6px">Edit</button><button class="secondary ba-delete-btn" data-id="${r.id}" style="display:block">Delete</button></td>` : ""}
       </tr>`);
     });
     tbody.innerHTML = parts.join("");
@@ -1775,7 +1775,78 @@
     if (el) saveBankAppStatus(el.dataset.id);
   });
 
+  // Admin correction of a logged application — every field an agent can't
+  // touch (bank, VKYC, agent) plus the four they can. Direct table update;
+  // the "admin manages bank applications" RLS policy is the real gate.
+  async function openBankAppEdit(id) {
+    const app = bankApps.find(r => String(r.id) === String(id));
+    if (!app) return;
+    const names = await agentNameMap();
+    const agentOpts = Object.entries(names).sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([aid, n]) => `<option value="${esc(aid)}" ${aid === app.agent_id ? "selected" : ""}>${esc(n)}</option>`).join("");
+    const vkycOpts = Object.keys(VKYC_LABEL)
+      .map(v => `<option value="${v}" ${v === app.vkyc_status ? "selected" : ""}>${esc(VKYC_LABEL[v])}</option>`).join("");
+    const ov = document.createElement("div");
+    ov.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1000; display:flex; align-items:center; justify-content:center; padding:16px; overflow:auto";
+    const lbl = "display:block; margin-top:10px; font-size:13px";
+    const inp = "width:100%; box-sizing:border-box";
+    ov.innerHTML = `<div class="card" style="max-width:440px; width:100%; margin:0">
+      <h3 style="margin:0 0 4px">Edit application</h3>
+      <p class="muted" style="margin:0">Fix mistakes in this record. Approval and activation are edited in the table.</p>
+      <label style="${lbl}">Bank<input id="baeBank" style="${inp}" maxlength="60" value="${esc(app.bank)}"></label>
+      <label style="${lbl}">Customer<input id="baeName" style="${inp}" maxlength="200" value="${esc(app.customer_name)}"></label>
+      <label style="${lbl}">Mobile<input id="baePhone" style="${inp}" inputmode="numeric" value="${esc(app.phone)}"></label>
+      <label style="${lbl}">Application ID (blank if none)<input id="baeAppId" style="${inp}" maxlength="60" value="${esc(app.application_id || "")}"></label>
+      <label style="${lbl}">Card<input id="baeCard" style="${inp}" maxlength="120" value="${esc(app.card_name || "")}"></label>
+      <label style="${lbl}">VKYC<select id="baeVkyc" style="${inp}">${vkycOpts}</select></label>
+      <label style="${lbl}">Agent<select id="baeAgent" style="${inp}">${agentOpts}</select></label>
+      <label style="${lbl}">Applied date<input id="baeDate" type="date" style="${inp}" value="${esc(String(app.applied_at).slice(0, 10))}"></label>
+      <p id="baeErr" class="err" style="margin:10px 0 0"></p>
+      <div style="margin-top:14px; display:flex; gap:10px; justify-content:flex-end">
+        <button class="secondary" id="baeCancel">Cancel</button>
+        <button id="baeSave">Save</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const g = x => ov.querySelector("#" + x);
+    const close = () => ov.remove();
+    g("baeCancel").onclick = close;
+    g("baeSave").onclick = async () => {
+      const bank = g("baeBank").value.trim();
+      const customer = g("baeName").value.trim();
+      const phone = g("baePhone").value.replace(/D/g, "");
+      const date = g("baeDate").value;
+      const err = !bank ? "Bank is required."
+        : !customer ? "Customer is required."
+        : (phone.length < 10 || phone.length > 15) ? "Mobile must be 10–15 digits."
+        : !date ? "Applied date is required." : "";
+      if (err) { g("baeErr").textContent = err; return; }
+      const patch = {
+        bank, customer_name: customer, phone,
+        application_id: g("baeAppId").value.trim() || null,
+        card_name: g("baeCard").value.trim() || null,
+        vkyc_status: g("baeVkyc").value,
+        agent_id: g("baeAgent").value,
+        applied_at: date,
+        updated_at: new Date().toISOString()
+      };
+      g("baeSave").disabled = true;
+      const { error } = await sb.from("bank_applications").update(patch).eq("id", app.id);
+      if (error) {
+        g("baeErr").textContent = /bank_appid_uniq|duplicate key/i.test(error.message || "")
+          ? "Another application already has this Bank + Application ID."
+          : "Could not save: " + errText(error);
+        g("baeSave").disabled = false;
+        return;
+      }
+      close();
+      $("bankAppsStatus").textContent = "Updated 1 application.";
+      loadBankApps();
+    };
+  }
+
   $("bankAppsTable").addEventListener("click", (e) => {
+    const editBtn = e.target.closest(".ba-edit-btn");
+    if (editBtn) { openBankAppEdit(editBtn.dataset.id); return; }
     const btn = e.target.closest(".ba-delete-btn");
     if (!btn) return;
     const row = btn.closest("tr[data-ba-id]");
