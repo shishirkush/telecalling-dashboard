@@ -1795,7 +1795,7 @@
       <p class="muted" style="margin:0">Fix mistakes in this record. Approval and activation are edited in the table.</p>
       <label style="${lbl}">Bank<input id="baeBank" style="${inp}" maxlength="60" value="${esc(app.bank)}"></label>
       <label style="${lbl}">Customer<input id="baeName" style="${inp}" maxlength="200" value="${esc(app.customer_name)}"></label>
-      <label style="${lbl}">Mobile<input id="baePhone" style="${inp}" inputmode="numeric" value="${esc(app.phone)}"></label>
+      <label style="${lbl}">Mobile<input id="baePhone" style="${inp}" inputmode="numeric" maxlength="10" value="${esc(app.phone)}"></label>
       <label style="${lbl}">Application ID (blank if none)<input id="baeAppId" style="${inp}" maxlength="60" value="${esc(app.application_id || "")}"></label>
       <label style="${lbl}">Card<input id="baeCard" style="${inp}" maxlength="120" value="${esc(app.card_name || "")}"></label>
       <label style="${lbl}">VKYC<select id="baeVkyc" style="${inp}">${vkycOpts}</select></label>
@@ -1817,7 +1817,7 @@
       const date = g("baeDate").value;
       const err = !bank ? "Bank is required."
         : !customer ? "Customer is required."
-        : (phone.length < 10 || phone.length > 15) ? "Mobile must be 10–15 digits."
+        : phone.length !== 10 ? "Mobile must be exactly 10 digits."
         : !date ? "Applied date is required." : "";
       if (err) { g("baeErr").textContent = err; return; }
       const patch = {
