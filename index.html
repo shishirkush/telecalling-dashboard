@@ -1265,7 +1265,16 @@
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 
+  // The per-agent timeline (every call, with lead names) is admin-only; a
+  // supervisor login keeps the home-page summary table but not this drill-down.
+  function agentNameCell(id, name) {
+    return isAdmin
+      ? `<button class="link-btn" data-agent-id="${esc(id)}" data-agent-name="${esc(name)}">${esc(name)}</button>`
+      : esc(name);
+  }
+
   function openAgentReport(agentId, agentName) {
+    if (!isAdmin) return;
     agentReportId = agentId;
     agentReportName = agentName;
     $("agentReportTitle").textContent = `Agent report — ${agentName}`;
@@ -1597,7 +1606,7 @@
     const tbody = $("agentTable").querySelector("tbody");
     tbody.innerHTML = list.length ? list.map(r => `
       <tr>
-        <td><button class="link-btn" data-agent-id="${esc(r.id)}" data-agent-name="${esc(r.name)}">${esc(r.name)}</button></td>
+        <td>${agentNameCell(r.id, r.name)}</td>
         <td class="num">${r.total}</td>
         <td class="num">${r.LEAD}</td>
         <td class="num">${r.total ? (100 * r.LEAD / r.total).toFixed(1) : "0.0"}</td>
@@ -2665,7 +2674,7 @@
               : isWebClient ? "Web app — can't be checked" : (v.competitor_apps_checked_at ? "None found" : "Not checked yet");
             return `
           <tr>
-            <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
+            <td>${agentNameCell(v.id, v.full_name)}</td>
             <td class="${v.app_version ? (v.app_version === newest ? "ok" : "err") : "muted"}">
               ${esc(v.app_version || "never reported")}</td>
             <td class="${looksLikeEmulator ? "err" : ""}">${esc(v.device_model || "—")}</td>
@@ -3050,7 +3059,7 @@
           const editing = archivedEditMode && archivedEditMode.id === v.id ? archivedEditMode.mode : null;
           const row = `
         <tr>
-          <td><button class="link-btn" data-agent-id="${esc(v.id)}" data-agent-name="${esc(v.full_name)}">${esc(v.full_name)}</button></td>
+          <td>${agentNameCell(v.id, v.full_name)}</td>
           <td class="muted">${esc(v.app_version || "never reported")}</td>
           <td class="muted">${esc(v.device_model || "—")}</td>
           <td class="muted">${v.app_version_reported_at ? esc(fmtDT(new Date(v.app_version_reported_at))) : "—"}</td>
