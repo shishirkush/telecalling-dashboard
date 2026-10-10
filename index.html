@@ -779,6 +779,7 @@
             <th>Lead</th>
             <th>Detail</th>
             <th>Duration</th>
+            <th>Ring</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1310,13 +1311,13 @@
     const [loginRes, attemptRes, dispRes] = await Promise.all([
       sb.from("login_log").select("event, platform, occurred_at")
         .eq("agent_id", agentReportId).gte("occurred_at", startIso).lt("occurred_at", endIso),
-      sb.from("call_attempts").select("lead_id, attempted_at, duration_secs, leads(name" + (isAdmin ? ", mobile" : "") + ")")
+      sb.from("call_attempts").select("lead_id, attempted_at, duration_secs, dial_secs, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("attempted_at", startIso).lt("attempted_at", endIso),
       sb.from("call_dispositions").select("lead_id, status, called_at, remarks, leads(name" + (isAdmin ? ", mobile" : "") + ")")
         .eq("agent_id", agentReportId).gte("called_at", startIso).lt("called_at", endIso)
     ]);
     const err = loginRes.error || attemptRes.error || dispRes.error;
-    if (err) { tbody.innerHTML = `<tr><td colspan="5" class="err">${esc(err.message)}</td></tr>`; return; }
+    if (err) { tbody.innerHTML = `<tr><td colspan="6" class="err">${esc(err.message)}</td></tr>`; return; }
 
     const logins = loginRes.data || [];
     const attempts = attemptRes.data || [];
@@ -1344,8 +1345,14 @@
     // entirely — matchedAttempts tracks which attempt object, if any,
     // each disposition below actually consumed, so anything left over
     // still gets its own "Call attempt" row after the loop.
+    // Ring time = total dial-to-hangup (phone call state, Android app 1.17.1+)
+    // minus the call log's talk time. For an unanswered call that is just how
+    // long it rang. Null when the agent is on the web app or an older build.
+    const SHORT_RING_SECS = 10;
+    const ringSecsOf = a => (a && a.dial_secs != null) ? Math.max(0, a.dial_secs - (a.duration_secs || 0)) : null;
     const matchedAttempts = new Set();
     let fastGapCount = 0;
+    let noAnswerMeasured = 0, shortRingCount = 0;
     dispositions.forEach(d => {
       const meta = STATUS_META.find(s => s.wire === d.status);
       const candidates = (attemptsByLead[d.lead_id] || []).filter(a => new Date(a.attempted_at) <= new Date(d.called_at));
@@ -1357,8 +1364,13 @@
       rows.push({
         time: d.called_at, type: "save", lead: (d.leads?.name || "—") + mobileNote,
         detail: (meta ? meta.label : d.status) + (d.remarks ? ` — ${d.remarks}` : ""), gapMs,
-        durationSecs: matched ? matched.duration_secs : null
+        durationSecs: matched ? matched.duration_secs : null,
+        ringSecs: ringSecsOf(matched), status: d.status
       });
+      if (d.status === "NO_ANSWER" && ringSecsOf(matched) != null) {
+        noAnswerMeasured++;
+        if (ringSecsOf(matched) < SHORT_RING_SECS) shortRingCount++;
+      }
     });
     attempts.forEach(a => {
       if (matchedAttempts.has(a)) return;
@@ -1376,7 +1388,10 @@
         <div class="value">${rows.filter(r => isOutsideCallingHours(r.time)).length}</div></div>
       <div class="tile"><div class="label">Gap under 40s</div>
         <div class="value ${fastGapCount > 0 ? "err" : ""}">${fastGapCount}</div>
-        <div class="sub">of ${dispositions.length} saves</div></div>`;
+        <div class="sub">of ${dispositions.length} saves</div></div>
+      <div class="tile"><div class="label">No Answer, rang under ${SHORT_RING_SECS}s</div>
+        <div class="value ${shortRingCount > 0 ? "err" : ""}">${shortRingCount}</div>
+        <div class="sub">of ${noAnswerMeasured} measured No Answers</div></div>`;
 
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
@@ -1387,8 +1402,9 @@
         <td>${esc(r.lead)}</td>
         <td class="muted">${esc(r.detail)}</td>
         <td>${fmtGap(r.durationSecs != null ? r.durationSecs * 1000 : null)}</td>
+        <td class="${r.status === "NO_ANSWER" && r.ringSecs != null && r.ringSecs < SHORT_RING_SECS ? "err" : ""}">${fmtGap(r.ringSecs != null ? r.ringSecs * 1000 : null)}</td>
       </tr>`;
-    }).join("") : `<tr><td colspan="5" class="muted">No activity on this day.</td></tr>`;
+    }).join("") : `<tr><td colspan="6" class="muted">No activity on this day.</td></tr>`;
   }
 
   async function enterApp() {
