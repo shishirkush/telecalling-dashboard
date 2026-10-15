@@ -1499,14 +1499,29 @@
         ? "id, name, mobile, company, callback_at, assigned_to"
         : "id, name, company, callback_at, assigned_to";
 
-      let q = sb.from("call_dispositions")
-        .select(`id, status, lead_quality, remarks, called_at, agent_id, leads(${leadCols})`)
-        .order("called_at", { ascending: false })
-        .limit(2000);
-      if (since) q = q.gte("called_at", since);
+      // The server returns at most 1000 rows per request no matter what
+      // .limit() says, so counting from a single request silently capped
+      // every total (tiles, chart, agent table) at exactly 1000. Count from
+      // a light query paged to the end; the Recent calls table only ever
+      // shows 100 rows, so it gets its own small joined query.
+      const dispPromise = fetchAllPages((a, b) => {
+        let q = sb.from("call_dispositions")
+          .select("id, status, lead_quality, called_at, agent_id")
+          .order("called_at", { ascending: false }).order("id", { ascending: false })
+          .range(a, b);
+        if (since) q = q.gte("called_at", since);
+        return q;
+      }).then(data => ({ data, error: null }), error => ({ data: null, error }));
 
-      const [dispRes, profRes, cbRes] = await Promise.all([
-        q,
+      let rq = sb.from("call_dispositions")
+        .select(`id, status, lead_quality, remarks, called_at, agent_id, leads(${leadCols})`)
+        .order("called_at", { ascending: false }).order("id", { ascending: false })
+        .limit(300);
+      if (since) rq = rq.gte("called_at", since);
+
+      const [dispRes, recentRes, profRes, cbRes] = await Promise.all([
+        dispPromise,
+        rq,
         sb.from("profiles").select("id, full_name, role"),
         sb.from("leads")
           .select(cbCols)
@@ -1526,7 +1541,7 @@
       renderChart(disp);
       renderAgents(disp, profs, names);
       renderCallbacks(cbRes.data || [], names);
-      renderRecent(disp, names);
+      renderRecent(recentRes.data || [], names);
     } catch (e) {
       alert("Could not load data: " + (e.message || e));
     }
@@ -2470,12 +2485,16 @@
     // than v_sms_outcomes (migration 24, which has no date filter) and
     // aggregates client-side, the same way renderAgents/renderRecent
     // build their tables from call_dispositions.
-    let smsQ = sb.from("sms_delivery_log")
-      .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
-      .order("created_at", { ascending: false })
-      .limit(5000);
+    // Paged to the end: a single request is capped at 1000 rows server-side.
     const smsSince = sinceIso();
-    if (smsSince) smsQ = smsQ.gte("created_at", smsSince);
+    const smsQ = fetchAllPages((a, b) => {
+      let q = sb.from("sms_delivery_log")
+        .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
+        .order("created_at", { ascending: false }).order("id", { ascending: false })
+        .range(a, b);
+      if (smsSince) q = q.gte("created_at", smsSince);
+      return q;
+    }).then(data => ({ data, error: null }));
 
     // "estimated", not "exact": with 80k+ leads and growing, an exact
     // count over a large table can blow Supabase's statement timeout —
