@@ -251,6 +251,8 @@
             <th class="num">Wrong no.</th>
             <th class="num">Switched off</th>
             <th class="num">No answer</th>
+            <th class="num" title="Share of this agent's calls saved as No Answer">No ans. %</th>
+            <th class="num" title="This agent's No Answer rate minus the rate of all other agents in the same period">vs peers</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1537,9 +1539,10 @@
       const profs = profRes.data || [];
       const names = Object.fromEntries(profs.map(p => [p.id, p.full_name || "—"]));
 
-      renderTiles(disp, cbRes.data || []);
+      const naStats = agentNaStats(disp, profs);
+      renderTiles(disp, cbRes.data || [], naStats, names);
       renderChart(disp);
-      renderAgents(disp, profs, names);
+      renderAgents(disp, profs, names, naStats);
       renderCallbacks(cbRes.data || [], names);
       renderRecent(recentRes.data || [], names);
     } catch (e) {
@@ -1550,7 +1553,46 @@
   // -----------------------------------------------------------------
   // Render
   // -----------------------------------------------------------------
-  function renderTiles(disp, callbacks) {
+  // No Answer rate per agent against everyone else in the same period. Calling
+  // at the same hours on the same batches, agents land within a few points of
+  // each other, so a large positive gap points at how the calls are made (hanging
+  // up early, tapping Call without dialling) rather than at the leads.
+  const NA_MIN_CALLS_SHOWN = 30;   // below this the rate is too noisy to compare
+  const NA_MIN_CALLS_FLAG = 50;    // below this an agent is never flagged
+  const NA_FLAG_POINTS = 15;       // peers-gap that turns the cell red
+  function agentNaStats(disp, profs) {
+    const agentIds = new Set(profs.filter(p => p.role === "agent").map(p => p.id));
+    const per = {};
+    let allTotal = 0, allNa = 0;
+    disp.forEach(d => {
+      if (!agentIds.has(d.agent_id)) return;
+      const r = per[d.agent_id] = per[d.agent_id] || { total: 0, na: 0 };
+      r.total++; allTotal++;
+      if (d.status === "NO_ANSWER") { r.na++; allNa++; }
+    });
+    const out = {};
+    Object.entries(per).forEach(([id, r]) => {
+      const peerTotal = allTotal - r.total, peerNa = allNa - r.na;
+      const pct = r.total ? 100 * r.na / r.total : 0;
+      const peerPct = peerTotal >= NA_MIN_CALLS_SHOWN ? 100 * peerNa / peerTotal : null;
+      out[id] = { total: r.total, na: r.na, pct, peerPct, diff: peerPct == null ? null : pct - peerPct };
+    });
+    return out;
+  }
+
+  function naPeerTile(naStats, names) {
+    const ranked = Object.entries(naStats)
+      .filter(([, s]) => s.total >= NA_MIN_CALLS_FLAG && s.diff != null)
+      .sort((a, b) => b[1].diff - a[1].diff);
+    if (ranked.length < 2) return "";
+    const [id, s] = ranked[0];
+    const flagged = s.diff >= NA_FLAG_POINTS;
+    return `<div class="tile"><div class="label">No Answer vs peers</div>
+        <div class="value ${flagged ? "err" : ""}">${s.diff >= 0 ? "+" : ""}${s.diff.toFixed(0)} pts</div>
+        <div class="sub">${esc(names[id] || "—")}: ${s.pct.toFixed(0)}% vs peers ${s.peerPct.toFixed(0)}% (highest of ${ranked.length})</div></div>`;
+  }
+
+  function renderTiles(disp, callbacks, naStats, names) {
     const total = disp.length;
     const leads = disp.filter(d => d.status === "LEAD").length;
     const conv  = total ? (100 * leads / total).toFixed(1) : "0.0";
@@ -1571,7 +1613,7 @@
       <div class="tile" data-tile="callbacks" role="button" tabindex="0" title="Open the full Callbacks page">
         <div class="label">Callbacks pending</div>
         <div class="value">${callbacks.length}</div>
-        <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>`;
+        <div class="sub ${overdue ? "err" : ""}">${overdue} overdue</div></div>${naPeerTile(naStats || {}, names || {})}`;
   }
 
   function rangeLabel() {
@@ -1601,7 +1643,16 @@
     }).join("");
   }
 
-  function renderAgents(disp, profs, names) {
+  function naCells(s) {
+    if (!s || !s.total) return '<td class="num">—</td><td class="num">—</td>';
+    const diff = s.diff;
+    const diffCell = diff == null || s.total < NA_MIN_CALLS_SHOWN
+      ? '<td class="num muted">—</td>'
+      : `<td class="num ${s.total >= NA_MIN_CALLS_FLAG && diff >= NA_FLAG_POINTS ? "err" : ""}" title="Other agents: ${s.peerPct.toFixed(0)}% No Answer">${diff >= 0 ? "+" : ""}${diff.toFixed(0)} pts</td>`;
+    return `<td class="num">${s.pct.toFixed(0)}%</td>${diffCell}`;
+  }
+
+  function renderAgents(disp, profs, names, naStats) {
     const rows = {};
     profs.filter(p => p.role === "agent").forEach(p => {
       rows[p.id] = { id: p.id, name: p.full_name || "—", total: 0,
@@ -1630,8 +1681,9 @@
         <td class="num">${r.WRONG_NUMBER}</td>
         <td class="num">${r.SWITCHED_OFF}</td>
         <td class="num">${r.NO_ANSWER}</td>
+        ${naCells((naStats || {})[r.id])}
       </tr>`).join("")
-      : `<tr><td colspan="9" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
+      : `<tr><td colspan="11" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
