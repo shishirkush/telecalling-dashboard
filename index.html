@@ -235,6 +235,7 @@
       <button data-days="-1" aria-pressed="false">All time</button>
     </div>
 
+    <p id="testNote" class="muted" style="margin:0 0 10px; font-size:12px"></p>
     <div class="tiles" id="tiles"></div>
 
     <div class="card">
@@ -1049,8 +1050,14 @@
     }
     return out;
   }
+  // Internal test accounts (QA logins, the Play review login) make real-looking
+  // calls and leads; they are left out of every total, chart and comparison.
+  const TEST_LOGIN_RE = /^(qa[_-].*|googleplayreview)$/i;
+  const isTestLogin = l => TEST_LOGIN_RE.test(l || "");
+  let testAgentIds = new Set();
   async function agentNameMap() {
-    const { data } = await sb.from("profiles").select("id, full_name");
+    const { data } = await sb.from("profiles").select("id, full_name, login_id");
+    testAgentIds = new Set((data || []).filter(p => isTestLogin(p.login_id)).map(p => p.id));
     return Object.fromEntries((data || []).map(p => [p.id, p.full_name || "—"]));
   }
   const dayKey = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -1119,7 +1126,7 @@
     try {
       const lc = isAdmin ? "name, mobile, company" : "name, company";
       const since = isoSince(leadsPageRangeDays);
-      const [rows, names] = await Promise.all([
+      const [allRows, names] = await Promise.all([
         fetchAllPages((a, b) => {
           let q = sb.from("call_dispositions")
             .select("id, status, lead_quality, remarks, called_at, agent_id, leads(" + lc + ")")
@@ -1130,7 +1137,8 @@
         }),
         agentNameMap()
       ]);
-      $("leadsSummary").textContent = rows.length + " lead(s), newest first, grouped by day.";
+      const rows = allRows.filter(r => !testAgentIds.has(r.agent_id));
+      $("leadsSummary").textContent = rows.length + " lead(s), newest first, grouped by day. Test accounts excluded.";
       if (!rows.length) { tbody.innerHTML = '<tr><td colspan="' + cols + '" class="muted">No leads in this period.</td></tr>'; return; }
       const counts = {};
       rows.forEach(r => { const k = dayKey(new Date(r.called_at)); counts[k] = (counts[k] || 0) + 1; });
@@ -1524,7 +1532,7 @@
       const [dispRes, recentRes, profRes, cbRes] = await Promise.all([
         dispPromise,
         rq,
-        sb.from("profiles").select("id, full_name, role"),
+        sb.from("profiles").select("id, full_name, role, login_id"),
         sb.from("leads")
           .select(cbCols)
           .not("callback_at", "is", null)
@@ -1535,16 +1543,21 @@
 
       if (dispRes.error) throw dispRes.error;
 
-      const disp  = dispRes.data || [];
-      const profs = profRes.data || [];
-      const names = Object.fromEntries(profs.map(p => [p.id, p.full_name || "—"]));
+      const allProfs = profRes.data || [];
+      const testIds = new Set(allProfs.filter(p => isTestLogin(p.login_id)).map(p => p.id));
+      const profs = allProfs.filter(p => !testIds.has(p.id));
+      const disp  = (dispRes.data || []).filter(d => !testIds.has(d.agent_id));
+      const recent = (recentRes.data || []).filter(d => !testIds.has(d.agent_id));
+      const names = Object.fromEntries(allProfs.map(p => [p.id, p.full_name || "—"]));
+      const excludedNames = allProfs.filter(p => testIds.has(p.id)).map(p => p.login_id).sort();
+      $("testNote").textContent = excludedNames.length ? "Totals exclude test accounts: " + excludedNames.join(", ") + "." : "";
 
       const naStats = agentNaStats(disp, profs);
       renderTiles(disp, cbRes.data || [], naStats, names);
       renderChart(disp);
       renderAgents(disp, profs, names, naStats);
       renderCallbacks(cbRes.data || [], names);
-      renderRecent(recentRes.data || [], names);
+      renderRecent(recent, names);
     } catch (e) {
       alert("Could not load data: " + (e.message || e));
     }
