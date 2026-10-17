@@ -252,8 +252,8 @@
             <th class="num">Wrong no.</th>
             <th class="num">Switched off</th>
             <th class="num">No answer</th>
-            <th class="num" title="Share of this agent's calls saved as No Answer">No ans. %</th>
-            <th class="num" title="This agent's No Answer rate minus the rate of all other agents in the same period">vs peers</th>
+            <th class="num hidden" id="naPctHead" title="Share of this agent's calls saved as No Answer">No ans. %</th>
+            <th class="num hidden" id="naPeersHead" title="This agent's No Answer rate minus the rate of all other agents in the same period">vs peers</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1462,6 +1462,8 @@
     // the table are admin-only, gated per-cell in renderBankApps().
     show($("bankAppsBulkCard"), isAdmin);
     show($("baDeleteHead"), isAdmin);
+    show($("naPctHead"), isAdmin);
+    show($("naPeersHead"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
     // regular supervisor login sees everything else on this dashboard but
     // not customer contact details, so the numbers aren't sitting exposed
@@ -1593,7 +1595,10 @@
     return out;
   }
 
+  // Admin-only: the No Answer rate and the peers comparison are not shown on a
+  // manager (non-admin supervisor) login.
   function naPeerTile(naStats, names) {
+    if (!isAdmin) return "";
     const ranked = Object.entries(naStats)
       .filter(([, s]) => s.total >= NA_MIN_CALLS_FLAG && s.diff != null)
       .sort((a, b) => b[1].diff - a[1].diff);
@@ -1657,6 +1662,7 @@
   }
 
   function naCells(s) {
+    if (!isAdmin) return "";
     if (!s || !s.total) return '<td class="num">—</td><td class="num">—</td>';
     const diff = s.diff;
     const diffCell = diff == null || s.total < NA_MIN_CALLS_SHOWN
@@ -1696,7 +1702,7 @@
         <td class="num">${r.NO_ANSWER}</td>
         ${naCells((naStats || {})[r.id])}
       </tr>`).join("")
-      : `<tr><td colspan="11" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
+      : `<tr><td colspan="${isAdmin ? 11 : 9}" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
