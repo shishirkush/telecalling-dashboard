@@ -303,6 +303,23 @@
         <button class="primary" id="addCampaignBtn">Add campaign</button>
       </div>
       <p id="campaignError" class="err"></p>
+
+      <h3 style="margin:20px 0 6px">Agent campaigns</h3>
+      <p class="muted" style="margin-top:0">
+        Move an agent to a different campaign without the agent doing anything.
+        It applies on their very next "Next lead"; their open leads go back to
+        the pool (a call they are in the middle of is kept until they save it).
+      </p>
+      <div class="table-wrap">
+        <table id="agentCampaignTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Campaign</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="agentCampaignError" class="err"></p>
     </div>
 
     <div class="card hidden" id="dbStatsCard">
@@ -2837,7 +2854,45 @@
                 ${c.is_active ? "On" : "Off"}</button></td>
         </tr>`).join("")
       : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
+    loadAgentCampaigns();
   }
+
+  // Admin sets an agent's campaign directly (backend/41_admin_set_agent_campaign.sql).
+  // claim_next_lead() reads profiles.current_campaign_id on every call, so the
+  // agent needs to do nothing — their next "Next lead" is served from the new campaign.
+  async function loadAgentCampaigns() {
+    const tbody = $("agentCampaignTable").querySelector("tbody");
+    const { data, error } = await sb.from("profiles")
+      .select("id, full_name, login_id, current_campaign_id")
+      .eq("role", "agent").eq("active", true).order("full_name");
+    if (error) { tbody.innerHTML = '<tr><td colspan="2" class="err">' + esc(errText(error)) + "</td></tr>"; return; }
+    const rows = (data || []).filter(p => !isTestLogin(p.login_id));
+    tbody.innerHTML = rows.length ? rows.map(p => `
+      <tr>
+        <td>${esc(p.full_name || p.login_id)}</td>
+        <td><select class="agent-campaign-select" data-agent="${esc(p.id)}" data-name="${esc(p.full_name || p.login_id)}">
+          <option value="" ${p.current_campaign_id == null ? "selected" : ""}>— none (agent picks) —</option>
+          ${campaigns.map(c => `<option value="${c.id}" ${c.id === p.current_campaign_id ? "selected" : ""} ${c.is_active ? "" : "disabled"}>${esc(c.name)}${c.is_active ? "" : " (off)"}</option>`).join("")}
+        </select></td>
+      </tr>`).join("") : '<tr><td colspan="2" class="muted">No active agents.</td></tr>';
+  }
+
+  $("agentCampaignTable").addEventListener("change", async (e) => {
+    const select = e.target.closest(".agent-campaign-select");
+    if (!select) return;
+    const errEl = $("agentCampaignError");
+    errEl.textContent = "";
+    const campaignId = select.value ? Number(select.value) : null;
+    const label = select.options[select.selectedIndex].text;
+    if (!confirm(`Move ${select.dataset.name} to "${label}"?\nTheir open leads go back to the pool; a call in progress is kept.`)) {
+      loadAgentCampaigns();
+      return;
+    }
+    select.disabled = true;
+    const { error } = await sb.rpc("admin_set_agent_campaign", { p_agent_id: select.dataset.agent, p_campaign_id: campaignId });
+    if (error) errEl.textContent = "Could not change campaign: " + errText(error);
+    loadAgentCampaigns();
+  });
 
   // Switching a campaign off doesn't touch batch_settings.campaign_id —
   // claim_next_lead() checks the campaign's own is_active too, so turning
