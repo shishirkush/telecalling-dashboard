@@ -303,23 +303,6 @@
         <button class="primary" id="addCampaignBtn">Add campaign</button>
       </div>
       <p id="campaignError" class="err"></p>
-
-      <h3 style="margin:20px 0 6px">Agent campaigns</h3>
-      <p class="muted" style="margin-top:0">
-        Move an agent to a different campaign without the agent doing anything.
-        It applies on their very next "Next lead"; their open leads go back to
-        the pool (a call they are in the middle of is kept until they save it).
-      </p>
-      <div class="table-wrap">
-        <table id="agentCampaignTable">
-          <thead><tr>
-            <th>Agent</th>
-            <th>Campaign</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p id="agentCampaignError" class="err"></p>
     </div>
 
     <div class="card hidden" id="dbStatsCard">
@@ -764,6 +747,7 @@
   <header>
     <h1 id="agentReportTitle">Agent report</h1>
     <span id="agentReportCampaign" class="muted"></span>
+    <select id="agentReportCampaignSelect" class="hidden" style="max-width:220px" title="Change this agent's campaign — applies on their next Next lead, no action needed from the agent"></select>
     <span class="spacer"></span>
     <input type="date" id="agentReportDate" style="max-width:160px">
     <button id="backFromAgentReport">← Back to dashboard</button>
@@ -1333,14 +1317,7 @@
     // (backend/32_campaigns.sql). Fetched on its own, independent of the
     // day's activity query below, so a failure here never blocks the rest
     // of the report from rendering.
-    $("agentReportCampaign").textContent = "";
-    sb.from("profiles").select("current_campaign_id, campaigns(name)")
-      .eq("id", agentReportId).single()
-      .then(({ data }) => {
-        $("agentReportCampaign").textContent = data?.campaigns?.name
-          ? `Campaign: ${data.campaigns.name}`
-          : "No campaign picked";
-      });
+    loadAgentReportCampaign();
 
     const { startIso, endIso } = istDayRangeUtc($("agentReportDate").value || istTodayString());
 
@@ -2854,44 +2831,53 @@
                 ${c.is_active ? "On" : "Off"}</button></td>
         </tr>`).join("")
       : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
-    loadAgentCampaigns();
   }
 
-  // Admin sets an agent's campaign directly (backend/41_admin_set_agent_campaign.sql).
-  // claim_next_lead() reads profiles.current_campaign_id on every call, so the
-  // agent needs to do nothing — their next "Next lead" is served from the new campaign.
-  async function loadAgentCampaigns() {
-    const tbody = $("agentCampaignTable").querySelector("tbody");
-    const { data, error } = await sb.from("profiles")
-      .select("id, full_name, login_id, current_campaign_id")
-      .eq("role", "agent").eq("active", true).order("full_name");
-    if (error) { tbody.innerHTML = '<tr><td colspan="2" class="err">' + esc(errText(error)) + "</td></tr>"; return; }
-    const rows = (data || []).filter(p => !isTestLogin(p.login_id));
-    tbody.innerHTML = rows.length ? rows.map(p => `
-      <tr>
-        <td>${esc(p.full_name || p.login_id)}</td>
-        <td><select class="agent-campaign-select" data-agent="${esc(p.id)}" data-name="${esc(p.full_name || p.login_id)}">
-          <option value="" ${p.current_campaign_id == null ? "selected" : ""}>— none (agent picks) —</option>
-          ${campaigns.map(c => `<option value="${c.id}" ${c.id === p.current_campaign_id ? "selected" : ""} ${c.is_active ? "" : "disabled"}>${esc(c.name)}${c.is_active ? "" : " (off)"}</option>`).join("")}
-        </select></td>
-      </tr>`).join("") : '<tr><td colspan="2" class="muted">No active agents.</td></tr>';
-  }
-
-  $("agentCampaignTable").addEventListener("change", async (e) => {
-    const select = e.target.closest(".agent-campaign-select");
-    if (!select) return;
-    const errEl = $("agentCampaignError");
-    errEl.textContent = "";
-    const campaignId = select.value ? Number(select.value) : null;
-    const label = select.options[select.selectedIndex].text;
-    if (!confirm(`Move ${select.dataset.name} to "${label}"?\nTheir open leads go back to the pool; a call in progress is kept.`)) {
-      loadAgentCampaigns();
+  // The Agent report header shows the agent's live current campaign (not scoped
+  // to the date picker — "which campaign are they on right now", the same
+  // current_campaign_id switch_campaign() writes, backend/32_campaigns.sql).
+  // An admin gets a dropdown there to move the agent to another campaign with no
+  // action on the agent's side (backend/41_admin_set_agent_campaign.sql):
+  // claim_next_lead() reads current_campaign_id on every call, so their very next
+  // "Next lead" comes from the new campaign. A manager just sees the name.
+  // Fetched independently of the day's activity so a failure never blocks the report.
+  async function loadAgentReportCampaign() {
+    const label = $("agentReportCampaign"), sel = $("agentReportCampaignSelect");
+    label.textContent = "";
+    show(sel, false);
+    const agentId = agentReportId;
+    const [profRes, campRes] = await Promise.all([
+      sb.from("profiles").select("current_campaign_id, campaigns(name)").eq("id", agentId).single(),
+      isAdmin ? sb.from("campaigns").select("id, name, is_active").order("name") : Promise.resolve({ data: [] })
+    ]);
+    if (agentId !== agentReportId) return; // report was switched to another agent meanwhile
+    const data = profRes.data;
+    if (!isAdmin || campRes.error || !campRes.data) {
+      label.textContent = data?.campaigns?.name ? `Campaign: ${data.campaigns.name}` : "No campaign picked";
       return;
     }
-    select.disabled = true;
-    const { error } = await sb.rpc("admin_set_agent_campaign", { p_agent_id: select.dataset.agent, p_campaign_id: campaignId });
-    if (error) errEl.textContent = "Could not change campaign: " + errText(error);
-    loadAgentCampaigns();
+    const cur = data ? data.current_campaign_id : null;
+    label.textContent = "Campaign:";
+    sel.innerHTML = `<option value="" ${cur == null ? "selected" : ""}>— none (agent picks) —</option>` +
+      campRes.data.map(c => `<option value="${c.id}" ${c.id === cur ? "selected" : ""} ${c.is_active || c.id === cur ? "" : "disabled"}>${esc(c.name)}${c.is_active ? "" : " (off)"}</option>`).join("");
+    sel.dataset.prev = cur == null ? "" : String(cur);
+    show(sel, true);
+  }
+
+  $("agentReportCampaignSelect").addEventListener("change", async (e) => {
+    const sel = e.target;
+    const campaignId = sel.value ? Number(sel.value) : null;
+    const name = (agentReportName || "this agent");
+    const label = sel.options[sel.selectedIndex].text;
+    if (!confirm(`Move ${name} to "${label}"?\nTheir open leads go back to the pool; a call in progress is kept. No action is needed from the agent.`)) {
+      sel.value = sel.dataset.prev || "";
+      return;
+    }
+    sel.disabled = true;
+    const { error } = await sb.rpc("admin_set_agent_campaign", { p_agent_id: agentReportId, p_campaign_id: campaignId });
+    sel.disabled = false;
+    if (error) alert("Could not change campaign: " + errText(error));
+    loadAgentReportCampaign();
   });
 
   // Switching a campaign off doesn't touch batch_settings.campaign_id —
