@@ -1505,19 +1505,23 @@
         ? "id, name, mobile, company, callback_at, assigned_to"
         : "id, name, company, callback_at, assigned_to";
 
-      // The server returns at most 1000 rows per request no matter what
-      // .limit() says, so counting from a single request silently capped
-      // every total (tiles, chart, agent table) at exactly 1000. Count from
-      // a light query paged to the end; the Recent calls table only ever
-      // shows 100 rows, so it gets its own small joined query.
-      const dispPromise = fetchAllPages((a, b) => {
-        let q = sb.from("call_dispositions")
-          .select("id, status, lead_quality, called_at, agent_id")
-          .order("called_at", { ascending: false }).order("id", { ascending: false })
-          .range(a, b);
-        if (since) q = q.gte("called_at", since);
-        return q;
-      }).then(data => ({ data, error: null }), error => ({ data: null, error }));
+      // One request is capped at 1000 rows, so counting from a plain select
+      // silently capped every total at exactly 1000; paging past that timed
+      // out on "All time" because the table's row-level policy runs a
+      // function per row (backend/42_dashboard_call_counts.sql). The counts
+      // now come already grouped from one aggregated query, expanded here
+      // into per-call rows so the render functions below stay unchanged.
+      // The Recent calls table only shows 100 rows, so it has its own small
+      // joined query.
+      const dispPromise = sb.rpc("dashboard_call_counts", { p_since: since }).then(({ data, error }) => {
+        if (error) return { data: null, error };
+        const rows = [];
+        (data || []).forEach(r => {
+          const n = Number(r.n);
+          for (let i = 0; i < n; i++) rows.push({ agent_id: r.agent_id, status: r.status, lead_quality: r.lead_quality });
+        });
+        return { data: rows, error: null };
+      });
 
       let rq = sb.from("call_dispositions")
         .select(`id, status, lead_quality, remarks, called_at, agent_id, leads(${leadCols})`)
