@@ -252,6 +252,9 @@
             <th class="num">Wrong no.</th>
             <th class="num">Switched off</th>
             <th class="num">No answer</th>
+            <th class="num hidden" id="talkHead" title="Talk time on calls the Android app could time (1.17.1+). Web-app agents show —.">Talk</th>
+            <th class="num hidden" id="ringHead" title="Ring time (dialling until answered or hung up) on timed calls">Ring</th>
+            <th class="num hidden" id="dispHead" title="Time from the end of each call to the saved outcome (capped at 30 min per call)">Disposition</th>
             <th class="num hidden" id="naPctHead" title="Share of this agent's calls saved as No Answer">No ans. %</th>
             <th class="num hidden" id="naPeersHead" title="This agent's No Answer rate minus the rate of all other agents in the same period">vs peers</th>
           </tr></thead>
@@ -1366,6 +1369,7 @@
     const matchedAttempts = new Set();
     let fastGapCount = 0;
     let noAnswerMeasured = 0, shortRingCount = 0;
+    let talkTot = 0, ringTot = 0, dispTot = 0, timedCalls = 0;
     dispositions.forEach(d => {
       const meta = STATUS_META.find(s => s.wire === d.status);
       const candidates = (attemptsByLead[d.lead_id] || []).filter(a => new Date(a.attempted_at) <= new Date(d.called_at));
@@ -1380,6 +1384,12 @@
         durationSecs: matched ? matched.duration_secs : null,
         ringSecs: ringSecsOf(matched), status: d.status
       });
+      if (matched && matched.dial_secs != null) {
+        timedCalls++;
+        talkTot += matched.duration_secs || 0;
+        ringTot += ringSecsOf(matched);
+        dispTot += Math.min(1800, Math.max(0, gapMs / 1000 - matched.dial_secs));
+      }
       if (d.status === "NO_ANSWER" && ringSecsOf(matched) != null) {
         noAnswerMeasured++;
         if (ringSecsOf(matched) < SHORT_RING_SECS) shortRingCount++;
@@ -1404,7 +1414,11 @@
         <div class="sub">of ${dispositions.length} saves</div></div>
       <div class="tile"><div class="label">No Answer, rang under ${SHORT_RING_SECS}s</div>
         <div class="value ${shortRingCount > 0 ? "err" : ""}">${shortRingCount}</div>
-        <div class="sub">of ${noAnswerMeasured} measured No Answers</div></div>`;
+        <div class="sub">of ${noAnswerMeasured} measured No Answers</div></div>
+      <div class="tile"><div class="label">Talk + ring + disposition</div>
+        <div class="value">${timedCalls ? fmtDur(talkTot + ringTot + dispTot) : "—"}</div>
+        <div class="sub">${timedCalls ? `talk ${fmtDur(talkTot)} · ring ${fmtDur(ringTot)} · disposition ${fmtDur(dispTot)}` : "no timed calls (web app or older build)"}</div>
+        ${timedCalls ? `<div class="sub">on ${timedCalls} of ${dispositions.length} saved calls</div>` : ""}</div>`;
 
     tbody.innerHTML = rows.length ? rows.map(r => {
       const outside = isOutsideCallingHours(r.time);
@@ -1456,6 +1470,9 @@
     // the table are admin-only, gated per-cell in renderBankApps().
     show($("bankAppsBulkCard"), isAdmin);
     show($("baDeleteHead"), isAdmin);
+    show($("talkHead"), isAdmin);
+    show($("ringHead"), isAdmin);
+    show($("dispHead"), isAdmin);
     show($("naPctHead"), isAdmin);
     show($("naPeersHead"), isAdmin);
     // Mobile numbers are only ever shown to the admin account (you) — a
@@ -1552,6 +1569,12 @@
       const excludedNames = allProfs.filter(p => testIds.has(p.id)).map(p => p.login_id).sort();
       $("testNote").textContent = excludedNames.length ? "Totals exclude test accounts: " + excludedNames.join(", ") + "." : "";
 
+      callTimes = {};
+      if (isAdmin) {
+        // Failure here only blanks the three time columns, never the page.
+        const { data: ct } = await sb.rpc("admin_call_time_totals", { p_since: since });
+        (ct || []).forEach(r => { callTimes[r.agent_id] = { n_calls: Number(r.n_calls), talk_secs: Number(r.talk_secs), ring_secs: Number(r.ring_secs), disp_secs: Number(r.disp_secs) }; });
+      }
       const naStats = agentNaStats(disp, profs);
       renderTiles(disp, cbRes.data || [], naStats, names);
       renderChart(disp);
@@ -1659,6 +1682,25 @@
     }).join("");
   }
 
+  // h/m/s for a total number of seconds (talk / ring / disposition totals)
+  function fmtDur(secs) {
+    if (secs == null) return "—";
+    const s = Math.round(secs);
+    if (s < 60) return s + "s";
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h ? h + "h " + String(m).padStart(2, "0") + "m" : m + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+
+  // Admin-only: talk + ring + disposition time per agent, from
+  // admin_call_time_totals() (backend/43). Only calls the Android app timed
+  // (1.17.1+) are included, so each cell says how many calls it covers.
+  function timeCells(t) {
+    if (!isAdmin) return "";
+    if (!t || !t.n_calls) return '<td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td>';
+    const tip = ` title="Covers ${t.n_calls} timed call(s)"`;
+    return `<td class="num"${tip}>${fmtDur(t.talk_secs)}</td><td class="num"${tip}>${fmtDur(t.ring_secs)}</td><td class="num"${tip}>${fmtDur(t.disp_secs)}</td>`;
+  }
+
   function naCells(s) {
     if (!isAdmin) return "";
     if (!s || !s.total) return '<td class="num">—</td><td class="num">—</td>';
@@ -1669,6 +1711,7 @@
     return `<td class="num">${s.pct.toFixed(0)}%</td>${diffCell}`;
   }
 
+  let callTimes = {};   // agent_id -> {n_calls, talk_secs, ring_secs, disp_secs}, admin only
   function renderAgents(disp, profs, names, naStats) {
     const rows = {};
     profs.filter(p => p.role === "agent").forEach(p => {
@@ -1698,9 +1741,10 @@
         <td class="num">${r.WRONG_NUMBER}</td>
         <td class="num">${r.SWITCHED_OFF}</td>
         <td class="num">${r.NO_ANSWER}</td>
+        ${timeCells(callTimes[r.id])}
         ${naCells((naStats || {})[r.id])}
       </tr>`).join("")
-      : `<tr><td colspan="${isAdmin ? 11 : 9}" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
+      : `<tr><td colspan="${isAdmin ? 14 : 9}" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
