@@ -1736,6 +1736,14 @@
                      LEAD: 0, CALL_LATER: 0, NOT_INTERESTED: 0,
                      WRONG_NUMBER: 0, SWITCHED_OFF: 0, NO_ANSWER: 0 };
     });
+    // A supervisor login that made calls (e.g. an agent signed in as a manager)
+    // gets its own row, so this table always adds up to the tiles above.
+    disp.forEach(d => {
+      if (rows[d.agent_id]) return;
+      const p = profs.find(x => x.id === d.agent_id);
+      if (p) rows[p.id] = { id: p.id, name: (p.full_name || p.login_id || "—") + " (" + (p.role === "supervisor" ? "supervisor login" : p.role) + ")", total: 0,
+                            LEAD: 0, CALL_LATER: 0, NOT_INTERESTED: 0, WRONG_NUMBER: 0, SWITCHED_OFF: 0, NO_ANSWER: 0 };
+    });
     disp.forEach(d => {
       const r = rows[d.agent_id];
       if (!r) return;
