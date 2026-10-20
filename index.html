@@ -299,6 +299,36 @@
       <p id="smsSwitchErr" class="err"></p>
     </div>
 
+    <div class="card hidden" id="recruitCard">
+      <h2>Recruitment SMS</h2>
+      <p class="muted" style="margin-top:0">
+        A separate contact list (not the credit-card leads). An agent taps
+        <strong>Send to next 100</strong> in the Android app and the app texts the
+        next batch from their own phone. Each agent is limited to the daily cap
+        below. Android agents only, and only on the app version that has the button.
+      </p>
+      <p id="recruitStats" class="muted">…</p>
+
+      <h3 style="margin:14px 0 6px">Message</h3>
+      <textarea id="recruitMessage" rows="4" maxlength="600" style="width:100%; box-sizing:border-box"></textarea>
+      <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <label>Daily cap per agent <input id="recruitCap" type="number" min="0" max="1000" style="width:80px"></label>
+        <label><input id="recruitEnabled" type="checkbox"> Sending enabled</label>
+        <button id="recruitSaveBtn" class="primary">Save</button>
+      </div>
+
+      <h3 style="margin:18px 0 6px">Add contacts</h3>
+      <p class="muted" style="margin-top:0">Paste mobile numbers (one per line or separated by commas) or choose a CSV/text file. 10-digit Indian mobiles only; duplicates are skipped.</p>
+      <textarea id="recruitNumbers" rows="5" placeholder="9876543210&#10;9123456789" style="width:100%; box-sizing:border-box"></textarea>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <input type="file" id="recruitFile" accept=".csv,.txt,text/plain,text/csv">
+        <input id="recruitBatchLabel" placeholder="Batch label (optional)" style="width:180px">
+        <button id="recruitAddBtn" class="secondary">Add numbers</button>
+      </div>
+      <p id="recruitMsg" class="muted"></p>
+      <p id="recruitErr" class="err"></p>
+    </div>
+
     <div class="card hidden" id="campaignsCard">
       <h2>Campaigns</h2>
       <p class="muted" style="margin-top:0">
@@ -1480,6 +1510,7 @@
     show($("assignmentsCard"), isAdmin);
     show($("campaignsCard"), isAdmin);
     show($("smsSwitchCard"), isAdmin);
+    show($("recruitCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
     // Bank applications table itself is visible to every supervisor
     // (managers can download the daily report too); only the bulk
@@ -1501,7 +1532,7 @@
     show($("login"), false);
     show($("app"), true);
     load();
-    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); }
+    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadRecruit(); }
   }
 
   // -----------------------------------------------------------------
@@ -2926,6 +2957,47 @@
     const { error } = await sb.rpc("admin_set_app_flag", { p_key: "apply_card_sms_enabled", p_value: next });
     if (error) $("smsSwitchErr").textContent = "Could not change: " + errText(error);
     loadSmsSwitch();
+  };
+
+  // Recruitment SMS list + settings (backend/46_recruit_sms.sql), admin only.
+  async function loadRecruit() {
+    const { data, error } = await sb.rpc("admin_recruit_stats");
+    if (error) { $("recruitErr").textContent = errText(error); return; }
+    $("recruitStats").textContent = "Pending " + data.pending + " · Sent " + data.sent + " (" + data.sent_today + " today) · Failed " + data.failed + " · Claimed, not yet reported " + data.claimed;
+    $("recruitMessage").value = data.message;
+    $("recruitCap").value = data.daily_cap;
+    $("recruitEnabled").checked = !!data.enabled;
+  }
+  $("recruitSaveBtn").onclick = async () => {
+    $("recruitErr").textContent = ""; $("recruitMsg").textContent = "";
+    const msg = $("recruitMessage").value;
+    if (!msg.trim()) { $("recruitErr").textContent = "The message cannot be empty."; return; }
+    const { error } = await sb.rpc("admin_set_recruit_settings", {
+      p_message: msg, p_daily_cap: Number($("recruitCap").value || 0), p_enabled: $("recruitEnabled").checked
+    });
+    if (error) { $("recruitErr").textContent = errText(error); return; }
+    $("recruitMsg").textContent = "Saved.";
+    loadRecruit();
+  };
+  $("recruitFile").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) $("recruitNumbers").value = await f.text();
+  };
+  $("recruitAddBtn").onclick = async () => {
+    $("recruitErr").textContent = ""; $("recruitMsg").textContent = "";
+    const nums = ($("recruitNumbers").value.match(/[0-9+][0-9 +\-]{8,}[0-9]/g) || []).map(x => x.replace(/[^0-9]/g, ""));
+    if (!nums.length) { $("recruitErr").textContent = "No numbers found."; return; }
+    $("recruitAddBtn").disabled = true;
+    let added = 0, skipped = 0;
+    for (let i = 0; i < nums.length; i += 5000) {
+      const { data, error } = await sb.rpc("admin_add_recruit_contacts", { p_numbers: nums.slice(i, i + 5000), p_batch: $("recruitBatchLabel").value || null });
+      if (error) { $("recruitErr").textContent = errText(error); break; }
+      added += data.added; skipped += data.skipped;
+    }
+    $("recruitAddBtn").disabled = false;
+    $("recruitMsg").textContent = "Added " + added + ", skipped " + skipped + " (invalid or already in the list).";
+    $("recruitNumbers").value = ""; $("recruitFile").value = "";
+    loadRecruit();
   };
 
   // The Agent report header shows the agent's live current campaign (not scoped
