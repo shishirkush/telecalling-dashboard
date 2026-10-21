@@ -453,22 +453,17 @@
         call back to them if a customer complains about a specific
         number. "Not set yet" means that agent hasn't been prompted for
         it yet (before v1.10.1 / v1.10.1-web) or dismissed the prompt.
-        Numbers are never discarded: archived agents stay listed, and the
-        number of a deleted agent, an earlier number an agent replaced, and
-        the number of an agent whose seat was handed to someone new all
-        remain here (marked Deleted / Previous number).
+        Numbers are never discarded. Download the full list as a file (CSV,
+        opens in Excel): it covers every agent, each marked <strong>Active</strong>,
+        <strong>Archived</strong> or <strong>Deleted</strong>, plus earlier numbers
+        (an agent changed their number, or the seat was handed to someone new),
+        marked <strong>Previous number</strong>.
       </p>
-      <div class="table-wrap">
-        <table id="agentContactTable">
-          <thead><tr>
-            <th>Agent</th>
-            <th>Login ID</th>
-            <th>Calling number</th>
-            <th>Status</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
+        <button id="contactDownloadBtn" class="secondary">Download contact numbers (CSV)</button>
+        <span id="contactSummary" class="muted"></span>
       </div>
+      <p id="contactErr" class="err"></p>
 
       <h2 style="margin-top:24px">Customer search activity</h2>
       <p class="muted" style="margin-top:0">
@@ -2646,7 +2641,6 @@
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
     const versionTbody = $("appVersionTable").querySelector("tbody");
-    const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
 
     // "estimated", not "exact": with 80k+ leads and growing, an exact
@@ -2818,28 +2812,13 @@
     }
 
     if (contact.error) {
-      contactTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(contact.error))}</td></tr>`;
+      $("contactSummary").textContent = "";
+      $("contactErr").textContent = errText(contact.error);
     } else {
-      // Every agent, not just active ones — archived agents keep their number — then the
-      // numbers that are no longer on a profile (deleted agents, replaced numbers, a seat
-      // handed to a new hire), from the permanent archive (backend/51).
-      const current = (contact.data || []).slice()
-        .sort((a, b) => (Number(b.active) - Number(a.active)) || String(a.full_name || "").localeCompare(String(b.full_name || "")))
-        .map(c => ({ name: c.full_name, login: c.login_id, num: c.contact_number, status: c.active ? "Active" : "Archived", dim: !c.active }));
-      const hist = await sb.rpc("admin_agent_contact_history");
-      const past = ((hist && hist.data) || [])
-        .map(h => ({ name: h.full_name, login: h.login_id, num: h.contact_number, status: h.status === "Deleted" ? "Deleted" : "Previous number", dim: true }));
-      const contactRows = current.concat(past);
-      contactTbody.innerHTML = (contactRows.length
-        ? contactRows.map(c => `
-          <tr>
-            <td>${esc(c.name)}</td>
-            <td class="muted">${esc(c.login || "—")}</td>
-            <td class="${c.num ? "" : "muted"}">${esc(c.num || "Not set yet")}</td>
-            <td class="muted">${esc(c.status)}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="4" class="muted">No agents.</td></tr>`) +
-        (hist && hist.error ? `<tr><td colspan="4" class="err">Could not load number history: ${esc(errText(hist.error))}</td></tr>` : "");
+      const list = contact.data || [];
+      const activeAgents = list.filter(c => c.active).length;
+      $("contactSummary").textContent = activeAgents + " active, " + (list.length - activeAgents) + " archived agents on record";
+      $("contactErr").textContent = "";
     }
 
     if (search.error) {
@@ -2887,6 +2866,42 @@
       : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
   }
 
+
+  // Agent contact numbers -> CSV: every agent (Active / Archived) plus the numbers kept in
+  // the permanent archive (Deleted agents, Previous numbers) — backend/51_agent_contact_archive.sql.
+  $("contactDownloadBtn").onclick = async () => {
+    const btn = $("contactDownloadBtn");
+    $("contactErr").textContent = "";
+    btn.disabled = true;
+    try {
+      const [cur, hist] = await Promise.all([
+        sb.from("v_agent_contacts").select("*"),
+        sb.rpc("admin_agent_contact_history")
+      ]);
+      if (cur.error) throw cur.error;
+      if (hist.error) throw hist.error;
+      const order = { "Active": 0, "Archived": 1, "Deleted": 2, "Previous number": 3 };
+      const rows = (cur.data || [])
+        .map(c => ({ status: c.active ? "Active" : "Archived", name: c.full_name, login: c.login_id, num: c.contact_number, seen: "" }))
+        .concat((hist.data || []).map(h => ({
+          status: h.status === "Deleted" ? "Deleted" : "Previous number", name: h.full_name, login: h.login_id, num: h.contact_number, seen: h.last_seen
+        })))
+        .sort((a, b) => (order[a.status] - order[b.status]) || String(a.name || "").localeCompare(String(b.name || "")));
+      const q = v => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+      const lines = [["Status", "Agent", "Login ID", "Calling number", "Last updated (earlier numbers only)"].map(q).join(",")]
+        .concat(rows.map(r => [r.status, r.name, r.login, r.num || "Not set yet", r.seen ? new Date(r.seen).toLocaleString() : ""].map(q).join(",")));
+      const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "agent-contact-numbers-" + new Date().toISOString().slice(0, 10) + ".csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (e) {
+      $("contactErr").textContent = "Could not build the file: " + errText(e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
 
   // Training material for the app's T page (backend/49_training_material.sql), admin only.
   let trainRows = [];
