@@ -417,25 +417,6 @@
         </table>
       </div>
 
-      <h2 style="margin-top:24px">Apply Card SMS delivery</h2>
-      <p class="muted" style="margin-top:0">
-        What actually happened when the app tried to text the Apply Card link
-        alongside a call — agents are remote, so this is the only way to see
-        a denied permission or a carrier failure on their own phone.
-        Same date range as the tiles above (<span id="smsRangeLabel">today</span>), every agent.
-      </p>
-      <div class="table-wrap scroll-y">
-        <table id="smsOutcomeTable">
-          <thead><tr>
-            <th>Agent</th>
-            <th>Outcome</th>
-            <th class="num">Count</th>
-            <th>Most recent</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-
       <h2 style="margin-top:24px; display:flex; align-items:center; gap:12px">
         App versions
         <button id="openArchived" style="font-size:0.7em">Archived (<span id="archivedCount">0</span>)</button>
@@ -1070,10 +1051,6 @@
         .forEach(x => x.setAttribute("aria-pressed", String(x === b)));
       rangeDays = Number(b.dataset.days);
       load();
-      // Apply Card SMS delivery (inside the Database report) now tracks
-      // this same range — see loadDatabaseStats. The rest of that
-      // report is deliberately whole-pool and does not need a reload.
-      if (isAdmin) loadDatabaseStats();
     };
   });
 
@@ -2680,30 +2657,9 @@
   async function loadDatabaseStats() {
     const tilesEl = $("dbTiles");
     const tbody = $("batchTable").querySelector("tbody");
-    const smsTbody = $("smsOutcomeTable").querySelector("tbody");
     const versionTbody = $("appVersionTable").querySelector("tbody");
     const contactTbody = $("agentContactTable").querySelector("tbody");
     const searchTbody = $("searchActivityTable").querySelector("tbody");
-
-    // Apply Card SMS delivery is scoped to the same Today/Last 7 days/
-    // Last 30 days/All time range as the tiles up top, not the whole
-    // table like the other Database-section reports below — it's a
-    // "is this working right now" diagnostic, so a device that was
-    // failing permission_denied last month but fixed itself since
-    // shouldn't still be flagged today. Queries the raw log rather
-    // than v_sms_outcomes (migration 24, which has no date filter) and
-    // aggregates client-side, the same way renderAgents/renderRecent
-    // build their tables from call_dispositions.
-    // Paged to the end: a single request is capped at 1000 rows server-side.
-    const smsSince = sinceIso();
-    const smsQ = fetchAllPages((a, b) => {
-      let q = sb.from("sms_delivery_log")
-        .select("agent_id, outcome, created_at, profiles(full_name, login_id)")
-        .order("created_at", { ascending: false }).order("id", { ascending: false })
-        .range(a, b);
-      if (smsSince) q = q.gte("created_at", smsSince);
-      return q;
-    }).then(data => ({ data, error: null }));
 
     // "estimated", not "exact": with 80k+ leads and growing, an exact
     // count over a large table can blow Supabase's statement timeout —
@@ -2725,7 +2681,6 @@
       sb.from("leads").select("id", { count: "estimated", head: true }).eq("is_closed", true),
       sb.from("call_dispositions").select("id", { count: "estimated", head: true }),
       sb.from("v_batch_summary").select("*"),
-      smsQ,
       sb.from("v_app_versions").select("*"),
       sb.from("v_agent_contacts").select("*"),
       sb.from("v_search_activity").select("*"),
@@ -2734,7 +2689,7 @@
     // allSettled never rejects, so unwrap each into the {data, count,
     // error} shape the rendering below expects — a network-level
     // rejection (not a Postgrest response) becomes a synthetic .error.
-    const [total, called, pending, closed, attempts, batch, sms, version, contact, search, camp] =
+    const [total, called, pending, closed, attempts, batch, version, contact, search, camp] =
       settled.map(r => r.status === "fulfilled" ? r.value : { error: r.reason });
 
     if (total.error || called.error || pending.error || closed.error || attempts.error) {
@@ -2792,50 +2747,6 @@
             <td><button class="delete-batch" data-batch="${esc(b.batch)}">Delete</button></td>
           </tr>`).join("")
         : `<tr><td colspan="9" class="muted">No leads imported yet.</td></tr>`;
-    }
-
-    if (sms.error) {
-      smsTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(sms.error))}</td></tr>`;
-    } else {
-      // "sent" is the only outcome that means the text actually went out;
-      // everything else — a denied permission, no carrier service, a
-      // radio-off phone, an app exception — is a real device the Apply
-      // Card message never reached. Broken down per agent (migration 24)
-      // rather than totalled across everyone: one agent stuck on
-      // permission_denied used to be invisible in a fleet-wide total
-      // that also included everyone else's successful sends. Grouped by
-      // agent+outcome here (client-side, from the raw log) rather than
-      // via v_sms_outcomes, so it can be scoped to the date range above;
-      // sorted the same way the view was — agent, then that agent's
-      // biggest failure mode on top.
-      const smsGroups = {};
-      for (const row of (sms.data || [])) {
-        const key = row.agent_id + "|" + row.outcome;
-        let g = smsGroups[key];
-        if (!g) {
-          g = smsGroups[key] = {
-            full_name: row.profiles && row.profiles.full_name,
-            login_id: row.profiles && row.profiles.login_id,
-            outcome: row.outcome,
-            total: 0,
-            most_recent: row.created_at
-          };
-        }
-        g.total++;
-        if (row.created_at > g.most_recent) g.most_recent = row.created_at;
-      }
-      const smsRows = Object.values(smsGroups)
-        .sort((a, b) => (a.full_name || a.login_id || "").localeCompare(b.full_name || b.login_id || "") || b.total - a.total);
-      $("smsRangeLabel").textContent = rangeLabel();
-      smsTbody.innerHTML = smsRows.length
-        ? smsRows.map(o => `
-          <tr>
-            <td>${esc(o.full_name || o.login_id)}</td>
-            <td class="${o.outcome === "sent" ? "ok" : "err"}">${esc(o.outcome)}</td>
-            <td class="num">${o.total}</td>
-            <td>${esc(fmtDT(new Date(o.most_recent)))}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="4" class="muted">No SMS attempts in this period.</td></tr>`;
     }
 
     if (version.error) {
