@@ -283,22 +283,6 @@
       <div id="custLookupResults"></div>
     </div>
 
-    <div class="card hidden" id="smsSwitchCard">
-      <h2>Apply Card text message</h2>
-      <p class="muted" style="margin-top:0">
-        Pauses the Apply Card SMS that the Android app sends to customers after each
-        call, and hides the web app's "Text the Apply Card link" button. It takes
-        effect the next time an agent opens or resumes the app. Agents still on
-        Android 1.17.1 or earlier keep sending until they update to 1.17.2.
-      </p>
-      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
-        <strong id="smsSwitchState">…</strong>
-        <button id="smsSwitchBtn" class="secondary" disabled>…</button>
-        <span id="smsSwitchMeta" class="muted"></span>
-      </div>
-      <p id="smsSwitchErr" class="err"></p>
-    </div>
-
     <div class="card hidden" id="trainingCard">
       <h2>Training material (T button)</h2>
       <p class="muted" style="margin-top:0">
@@ -1525,7 +1509,6 @@
     show($("createAgentCard"), isAdmin);
     show($("assignmentsCard"), isAdmin);
     show($("campaignsCard"), isAdmin);
-    show($("smsSwitchCard"), isAdmin);
     show($("callRecCard"), isAdmin);
     show($("trainingCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
@@ -1549,7 +1532,7 @@
     show($("login"), false);
     show($("app"), true);
     load();
-    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadCallRecordings(true); loadTraining(); }
+    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadCallRecordings(true); loadTraining(); }
   }
 
   // -----------------------------------------------------------------
@@ -2888,27 +2871,6 @@
       : `<tr><td colspan="2" class="muted">No campaigns yet.</td></tr>`;
   }
 
-  // Admin's remote switch for the Apply Card SMS (backend/44_app_flags_sms_switch.sql).
-  let smsEnabled = true;
-  async function loadSmsSwitch() {
-    const { data, error } = await sb.rpc("admin_get_app_flags");
-    if (error) { $("smsSwitchErr").textContent = errText(error); return; }
-    const f = (data || []).find(r => r.key === "apply_card_sms_enabled");
-    smsEnabled = f ? f.value : true;
-    $("smsSwitchState").textContent = smsEnabled ? "ON — customers are being texted" : "PAUSED — no texts are being sent";
-    $("smsSwitchState").className = smsEnabled ? "ok" : "err";
-    $("smsSwitchBtn").textContent = smsEnabled ? "Pause texts" : "Resume texts";
-    $("smsSwitchBtn").disabled = false;
-    $("smsSwitchMeta").textContent = f && f.updated_by_name ? "Last changed by " + f.updated_by_name + ", " + fmtDT(new Date(f.updated_at)) : "";
-  }
-  $("smsSwitchBtn").onclick = async () => {
-    const next = !smsEnabled;
-    if (!confirm(next ? "Resume the Apply Card text messages?" : "Pause the Apply Card text messages for every agent?")) return;
-    $("smsSwitchBtn").disabled = true; $("smsSwitchErr").textContent = "";
-    const { error } = await sb.rpc("admin_set_app_flag", { p_key: "apply_card_sms_enabled", p_value: next });
-    if (error) $("smsSwitchErr").textContent = "Could not change: " + errText(error);
-    loadSmsSwitch();
-  };
 
   // Training material for the app's T page (backend/49_training_material.sql), admin only.
   let trainRows = [];
