@@ -597,14 +597,14 @@
       <p class="muted">
         Handing an archived seat to a new hire? First use
         <strong>Reassign history</strong> to move the outgoing agent's past
-        calls, SMS and login records onto someone still active, then use
+        calls and login records onto someone still active, then use
         <strong>Rename</strong> to give the seat the new hire's name, login
         ID and (optionally) a new password — otherwise the new hire's name
         would show up against the previous agent's entire call history.
       </p>
       <p class="muted">
         <strong>Delete</strong> permanently removes an agent's login —
-        but only if they never placed a call, sent an SMS, or signed in.
+        but only if they never placed a call or signed in.
         That's the usual case for a duplicate or mistyped account, not a
         real seat someone actually worked from. If they have any history,
         <strong>Reassign history</strong> onto another active agent first —
@@ -3356,7 +3356,7 @@
   }
 
   // -----------------------------------------------------------------
-  // Reassign an archived agent's past call/SMS/login history to
+  // Reassign an archived agent's past call/login history to
   // someone still active — see backend/25_reassign_archived_agent_history.sql
   // -----------------------------------------------------------------
   async function onReassignAgent(fromId, fromName) {
@@ -3370,7 +3370,7 @@
       return;
     }
     const toName = select.options[select.selectedIndex].dataset.name || toId;
-    if (!confirm(`Move all of "${fromName}"'s past calls, SMS and login records to "${toName}"? This cannot be undone.`)) return;
+    if (!confirm(`Move all of "${fromName}"'s past calls and login records to "${toName}"? This cannot be undone.`)) return;
 
     saveBtn.disabled = true;
     statusEl.textContent = "Reassigning…";
@@ -3400,7 +3400,7 @@
     const name = btn.dataset.agentName;
     if (!confirm(
       `Permanently delete "${name}"'s account? This only works if they ` +
-      `never placed a call, sent an SMS, or signed in — this cannot be ` +
+      `never placed a call or signed in — this cannot be ` +
       `undone.`
     )) return;
 
@@ -3483,7 +3483,7 @@
             <div class="card" style="margin:8px 0">
               <strong>Reassign "${esc(v.full_name)}"'s call history</strong>
               <p class="muted" style="margin:4px 0 8px">
-                Moves every call, SMS and login record currently
+                Moves every call and login record currently
                 attributed to "${esc(v.full_name)}" onto the agent you
                 pick below. Their open leads were already released back
                 to the pool when they were archived — this only affects
