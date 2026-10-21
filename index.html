@@ -299,6 +299,44 @@
       <p id="smsSwitchErr" class="err"></p>
     </div>
 
+    <div class="card hidden" id="callRecCard">
+      <h2>Call recordings</h2>
+      <p class="muted" style="margin-top:0">
+        The agent's side of each call placed from the Android app, recorded from the
+        phone's microphone and uploaded afterwards. Visible to admins only.
+        Calls marked "no audio" are ones where the phone's microphone was silent.
+      </p>
+      <div id="callRecBanner" class="hidden" style="padding:10px 12px; border-radius:6px; margin-bottom:10px"></div>
+      <p id="callRecStats" class="muted">…</p>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px">
+        <select id="callRecAgent" style="max-width:240px"><option value="">All agents</option></select>
+        <label><input type="checkbox" id="callRecSilent"> Include calls with no audio</label>
+        <button id="callRecRefresh" class="secondary">Refresh</button>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px">
+        <button id="callRecDeleteOldest" class="secondary">Delete oldest 100</button>
+        <label>or older than <input type="date" id="callRecOlderThan"></label>
+        <button id="callRecDeleteOlder" class="secondary">Delete those (up to 500)</button>
+      </div>
+      <div class="table-wrap">
+        <table id="callRecTable">
+          <thead><tr>
+            <th>Agent</th>
+            <th>Lead</th>
+            <th>Mobile</th>
+            <th>Call started</th>
+            <th class="num">Length</th>
+            <th>Listen</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p><button id="callRecMore" class="secondary hidden">Load more</button></p>
+      <p id="callRecMsg" class="muted"></p>
+      <p id="callRecErr" class="err"></p>
+    </div>
+
     <div class="card hidden" id="recruitCard">
       <h2>Recruitment SMS</h2>
       <p class="muted" style="margin-top:0">
@@ -1511,6 +1549,7 @@
     show($("campaignsCard"), isAdmin);
     show($("smsSwitchCard"), isAdmin);
     show($("recruitCard"), isAdmin);
+    show($("callRecCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
     // Bank applications table itself is visible to every supervisor
     // (managers can download the daily report too); only the bulk
@@ -1532,7 +1571,7 @@
     show($("login"), false);
     show($("app"), true);
     load();
-    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadRecruit(); }
+    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadRecruit(); loadCallRecordings(true); }
   }
 
   // -----------------------------------------------------------------
@@ -2998,6 +3037,136 @@
     $("recruitMsg").textContent = "Added " + added + ", skipped " + skipped + " (invalid or already in the list).";
     $("recruitNumbers").value = ""; $("recruitFile").value = "";
     loadRecruit();
+  };
+
+  // Call recordings (backend/48_call_recordings.sql) — ADMIN ONLY: the card is shown only to
+  // admins, and the server refuses every one of these calls for anyone else.
+  let callRecRows = [];
+  const callRecAgents = new Map();   // agent id -> name, for the filter
+  const callRecClock = ms => { const t = Math.round(ms / 1000); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+  const callRecMB = b => (b / 1048576).toFixed(1);
+  const CALLREC_BUCKET = "agent-recordings";
+
+  async function loadCallRecStats() {
+    const { data, error } = await sb.rpc("admin_call_recording_stats");
+    if (error || !data) return;
+    $("callRecStats").textContent = data.calls + " calls · " + data.with_audio + " with audio (" + data.minutes + " min) · " +
+      data.no_audio + " with no audio · " + callRecMB(data.bytes_used) + " MB of 1024 MB used (" + data.percent + "%)";
+    const b = $("callRecBanner");
+    if (data.percent >= 80) {
+      const red = data.percent >= 95;
+      b.className = "";
+      b.style.background = red ? "#fde2e2" : "#fff4d6";
+      b.style.border = "1px solid " + (red ? "#e05252" : "#e0b13a");
+      b.innerHTML = "<strong>" + (red ? "Storage is almost full" : "Storage is getting full") + " (" + data.percent +
+        "%).</strong> Delete old recordings below" + (red ? " — new uploads will start failing at 1 GB." : " to keep uploads working.");
+    } else {
+      b.className = "hidden";
+    }
+  }
+
+  async function fetchCallRecs(opts) {
+    return sb.rpc("admin_list_call_recordings", {
+      p_agent: opts.agent || null,
+      p_before: opts.before || null,
+      p_include_silent: !!opts.silent,
+      p_oldest_first: !!opts.oldestFirst,
+      p_cursor: opts.cursor || null,
+      p_limit: opts.limit || 50
+    });
+  }
+
+  async function loadCallRecordings(reset) {
+    $("callRecErr").textContent = "";
+    if (reset) { callRecRows = []; $("callRecMsg").textContent = ""; loadCallRecStats(); }
+    const cursor = callRecRows.length ? callRecRows[callRecRows.length - 1].started_at : null;
+    const { data, error } = await fetchCallRecs({
+      agent: $("callRecAgent").value, silent: $("callRecSilent").checked, cursor, limit: 50
+    });
+    if (error) { $("callRecErr").textContent = errText(error); return; }
+    const rows = data || [];
+    callRecRows = callRecRows.concat(rows);
+    rows.forEach(r => callRecAgents.set(r.agent_id, r.agent_name || r.login_id));
+    const sel = $("callRecAgent"), keep = sel.value;
+    sel.innerHTML = '<option value="">All agents</option>' +
+      [...callRecAgents.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+        .map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join("");
+    sel.value = keep;
+    $("callRecMore").classList.toggle("hidden", rows.length < 50);
+    renderCallRecordings();
+  }
+
+  function renderCallRecordings() {
+    const body = $("callRecTable").querySelector("tbody");
+    if (!callRecRows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No recordings.</td></tr>'; return; }
+    body.innerHTML = callRecRows.map((r, i) =>
+      "<tr><td>" + esc(r.agent_name || r.login_id) + "</td><td>" + esc(r.lead_id ?? "") + "</td><td>" + esc(r.mobile ?? "") +
+      "</td><td>" + esc(new Date(r.started_at).toLocaleString()) + '</td><td class="num">' + callRecClock(r.duration_ms) + "</td><td>" +
+      (r.has_audio ? '<button class="secondary callrec-play" data-i="' + i + '">Play</button>' : '<span class="muted">no audio</span>') +
+      '</td><td><button class="secondary callrec-del" data-i="' + i + '">Delete</button></td></tr>').join("");
+  }
+
+  // Removes the audio from Storage first, then the rows — so a failure never leaves an
+  // unreachable file behind a missing row.
+  async function deleteCallRecs(rows) {
+    const paths = rows.filter(r => r.has_audio && r.storage_path).map(r => r.storage_path);
+    if (paths.length) {
+      const rm = await sb.storage.from(CALLREC_BUCKET).remove(paths);
+      if (rm.error) { $("callRecErr").textContent = "Could not delete the audio files: " + rm.error.message; return false; }
+    }
+    const { error } = await sb.rpc("admin_delete_call_recordings", { p_ids: rows.map(r => r.id) });
+    if (error) { $("callRecErr").textContent = errText(error); return false; }
+    return true;
+  }
+
+  $("callRecTable").querySelector("tbody").addEventListener("click", async (ev) => {
+    const play = ev.target.closest(".callrec-play");
+    const del = ev.target.closest(".callrec-del");
+    if (play) {
+      const row = callRecRows[Number(play.dataset.i)];
+      if (!row) return;
+      play.disabled = true; play.textContent = "Loading…";
+      const { data, error } = await sb.storage.from(CALLREC_BUCKET).createSignedUrl(row.storage_path, 3600);
+      if (error || !data) {
+        play.disabled = false; play.textContent = "Play";
+        $("callRecErr").textContent = "Could not open the recording: " + (error ? error.message : "unknown error");
+        return;
+      }
+      const cell = play.parentElement;
+      cell.innerHTML = '<audio controls autoplay preload="auto" style="max-width:230px"></audio> <a target="_blank" rel="noopener">Download</a>';
+      cell.querySelector("audio").src = data.signedUrl;
+      cell.querySelector("a").href = data.signedUrl;
+    } else if (del) {
+      const row = callRecRows[Number(del.dataset.i)];
+      if (!row) return;
+      if (!confirm("Delete this recording (" + (row.agent_name || row.login_id) + ", " + new Date(row.started_at).toLocaleString() + ")? This cannot be undone.")) return;
+      if (await deleteCallRecs([row])) loadCallRecordings(true);
+    }
+  });
+
+  $("callRecAgent").onchange = () => loadCallRecordings(true);
+  $("callRecSilent").onchange = () => loadCallRecordings(true);
+  $("callRecRefresh").onclick = () => loadCallRecordings(true);
+  $("callRecMore").onclick = () => loadCallRecordings(false);
+
+  async function bulkDeleteCallRecs(opts, what) {
+    $("callRecErr").textContent = ""; $("callRecMsg").textContent = "";
+    const { data, error } = await fetchCallRecs(Object.assign({ oldestFirst: true, silent: true }, opts));
+    if (error) { $("callRecErr").textContent = errText(error); return; }
+    const rows = data || [];
+    if (!rows.length) { $("callRecMsg").textContent = "Nothing to delete."; return; }
+    const bytes = rows.reduce((a, r) => a + (r.size_bytes || 0), 0);
+    if (!confirm("Delete " + rows.length + " recordings (" + what + ", about " + callRecMB(bytes) + " MB)? This cannot be undone.")) return;
+    if (await deleteCallRecs(rows)) {
+      $("callRecMsg").textContent = "Deleted " + rows.length + " recordings.";
+      loadCallRecordings(true);
+    }
+  }
+  $("callRecDeleteOldest").onclick = () => bulkDeleteCallRecs({ limit: 100 }, "the oldest 100");
+  $("callRecDeleteOlder").onclick = () => {
+    const d = $("callRecOlderThan").value;
+    if (!d) { $("callRecErr").textContent = "Pick a date first."; return; }
+    bulkDeleteCallRecs({ before: new Date(d + "T00:00:00").toISOString(), limit: 500 }, "older than " + d);
   };
 
   // The Agent report header shows the agent's live current campaign (not scoped
