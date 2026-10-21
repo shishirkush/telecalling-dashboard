@@ -453,6 +453,10 @@
         call back to them if a customer complains about a specific
         number. "Not set yet" means that agent hasn't been prompted for
         it yet (before v1.10.1 / v1.10.1-web) or dismissed the prompt.
+        Numbers are never discarded: archived agents stay listed, and the
+        number of a deleted agent, an earlier number an agent replaced, and
+        the number of an agent whose seat was handed to someone new all
+        remain here (marked Deleted / Previous number).
       </p>
       <div class="table-wrap">
         <table id="agentContactTable">
@@ -460,6 +464,7 @@
             <th>Agent</th>
             <th>Login ID</th>
             <th>Calling number</th>
+            <th>Status</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -2813,17 +2818,28 @@
     }
 
     if (contact.error) {
-      contactTbody.innerHTML = `<tr><td colspan="3" class="err">${esc(errText(contact.error))}</td></tr>`;
+      contactTbody.innerHTML = `<tr><td colspan="4" class="err">${esc(errText(contact.error))}</td></tr>`;
     } else {
-      const contactRows = (contact.data || []).filter(c => c.active);
-      contactTbody.innerHTML = contactRows.length
+      // Every agent, not just active ones — archived agents keep their number — then the
+      // numbers that are no longer on a profile (deleted agents, replaced numbers, a seat
+      // handed to a new hire), from the permanent archive (backend/51).
+      const current = (contact.data || []).slice()
+        .sort((a, b) => (Number(b.active) - Number(a.active)) || String(a.full_name || "").localeCompare(String(b.full_name || "")))
+        .map(c => ({ name: c.full_name, login: c.login_id, num: c.contact_number, status: c.active ? "Active" : "Archived", dim: !c.active }));
+      const hist = await sb.rpc("admin_agent_contact_history");
+      const past = ((hist && hist.data) || [])
+        .map(h => ({ name: h.full_name, login: h.login_id, num: h.contact_number, status: h.status === "Deleted" ? "Deleted" : "Previous number", dim: true }));
+      const contactRows = current.concat(past);
+      contactTbody.innerHTML = (contactRows.length
         ? contactRows.map(c => `
           <tr>
-            <td>${esc(c.full_name)}</td>
-            <td class="muted">${esc(c.login_id || "—")}</td>
-            <td class="${c.contact_number ? "" : "muted"}">${esc(c.contact_number || "Not set yet")}</td>
+            <td>${esc(c.name)}</td>
+            <td class="muted">${esc(c.login || "—")}</td>
+            <td class="${c.num ? "" : "muted"}">${esc(c.num || "Not set yet")}</td>
+            <td class="muted">${esc(c.status)}</td>
           </tr>`).join("")
-        : `<tr><td colspan="3" class="muted">No active agents.</td></tr>`;
+        : `<tr><td colspan="4" class="muted">No agents.</td></tr>`) +
+        (hist && hist.error ? `<tr><td colspan="4" class="err">Could not load number history: ${esc(errText(hist.error))}</td></tr>` : "");
     }
 
     if (search.error) {
