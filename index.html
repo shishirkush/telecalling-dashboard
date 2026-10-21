@@ -299,6 +299,37 @@
       <p id="smsSwitchErr" class="err"></p>
     </div>
 
+    <div class="card hidden" id="trainingCard">
+      <h2>Training material (T button)</h2>
+      <p class="muted" style="margin-top:0">
+        What agents see when they tap <strong>T</strong> in the Android app: PDFs (calling script,
+        card features and benefits) and audio recordings (example calls). Agents can only read
+        and listen. Files up to 50 MB; PDF, MP3, M4A, AAC, WAV or OGG.
+      </p>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px">
+        <input type="file" id="trainFile" accept=".pdf,.mp3,.m4a,.aac,.wav,.ogg,application/pdf,audio/*">
+        <input id="trainTitle" placeholder="Title shown to agents" maxlength="120" style="width:240px">
+        <label>Order <input id="trainSort" type="number" value="0" style="width:70px"></label>
+        <button id="trainUploadBtn" class="primary">Upload</button>
+      </div>
+      <div class="table-wrap">
+        <table id="trainTable">
+          <thead><tr>
+            <th>Title</th>
+            <th>Type</th>
+            <th class="num">Size</th>
+            <th class="num">Order</th>
+            <th>Shown to agents</th>
+            <th>Preview</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="trainMsg" class="muted"></p>
+      <p id="trainErr" class="err"></p>
+    </div>
+
     <div class="card hidden" id="callRecCard">
       <h2>Call recordings</h2>
       <p class="muted" style="margin-top:0">
@@ -1550,6 +1581,7 @@
     show($("smsSwitchCard"), isAdmin);
     show($("recruitCard"), isAdmin);
     show($("callRecCard"), isAdmin);
+    show($("trainingCard"), isAdmin);
     show($("dbStatsCard"), isAdmin);
     // Bank applications table itself is visible to every supervisor
     // (managers can download the daily report too); only the bulk
@@ -1571,7 +1603,7 @@
     show($("login"), false);
     show($("app"), true);
     load();
-    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadRecruit(); loadCallRecordings(true); }
+    if (isAdmin) { loadAssignmentsPanel(); loadDatabaseStats(); loadSmsSwitch(); loadRecruit(); loadCallRecordings(true); loadTraining(); }
   }
 
   // -----------------------------------------------------------------
@@ -3038,6 +3070,88 @@
     $("recruitNumbers").value = ""; $("recruitFile").value = "";
     loadRecruit();
   };
+
+  // Training material for the app's T page (backend/49_training_material.sql), admin only.
+  let trainRows = [];
+  const TRAIN_BUCKET = "training-material";
+  const trainMB = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+
+  async function loadTraining() {
+    $("trainErr").textContent = "";
+    const { data, error } = await sb.rpc("admin_list_training_items");
+    if (error) { $("trainErr").textContent = errText(error); return; }
+    trainRows = data || [];
+    const body = $("trainTable").querySelector("tbody");
+    if (!trainRows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">Nothing uploaded yet.</td></tr>'; return; }
+    body.innerHTML = trainRows.map((r, i) =>
+      "<tr><td>" + esc(r.title) + "</td><td>" + (r.kind === "pdf" ? "PDF" : "Audio") + '</td><td class="num">' + trainMB(r.size_bytes) +
+      '</td><td class="num">' + r.sort_order + '</td><td><input type="checkbox" class="train-active" data-i="' + i + '"' + (r.active ? " checked" : "") +
+      '></td><td><button class="secondary train-preview" data-i="' + i + '">' + (r.kind === "pdf" ? "Open" : "Play") +
+      '</button></td><td><button class="secondary train-edit" data-i="' + i + '">Edit</button> <button class="secondary train-del" data-i="' + i + '">Delete</button></td></tr>').join("");
+  }
+
+  $("trainUploadBtn").onclick = async () => {
+    $("trainErr").textContent = ""; $("trainMsg").textContent = "";
+    const file = $("trainFile").files && $("trainFile").files[0];
+    if (!file) { $("trainErr").textContent = "Choose a file first."; return; }
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    const isAudio = file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/i.test(file.name);
+    if (!isPdf && !isAudio) { $("trainErr").textContent = "Only PDF or audio files can be uploaded."; return; }
+    if (file.size > 50 * 1024 * 1024) { $("trainErr").textContent = "That file is over 50 MB."; return; }
+    const title = $("trainTitle").value.trim() || file.name.replace(/\.[^.]+$/, "");
+    const id = crypto.randomUUID();
+    const ext = (file.name.match(/\.([A-Za-z0-9]+)$/) || [, isPdf ? "pdf" : "m4a"])[1].toLowerCase();
+    const path = id + "." + ext;
+    const mime = isPdf ? "application/pdf" : (file.type || "audio/mpeg");
+    $("trainUploadBtn").disabled = true; $("trainMsg").textContent = "Uploading…";
+    const up = await sb.storage.from(TRAIN_BUCKET).upload(path, file, { contentType: mime });
+    if (up.error) { $("trainErr").textContent = "Upload failed: " + up.error.message; $("trainMsg").textContent = ""; $("trainUploadBtn").disabled = false; return; }
+    const { error } = await sb.rpc("admin_add_training_item", {
+      p_id: id, p_kind: isPdf ? "pdf" : "audio", p_title: title, p_path: path, p_size: file.size, p_sort: Number($("trainSort").value || 0)
+    });
+    if (error) {
+      await sb.storage.from(TRAIN_BUCKET).remove([path]);   // don't leave an orphan file
+      $("trainErr").textContent = errText(error); $("trainMsg").textContent = ""; $("trainUploadBtn").disabled = false; return;
+    }
+    $("trainMsg").textContent = "Uploaded. Agents see it the next time they open T (or tap refresh).";
+    $("trainFile").value = ""; $("trainTitle").value = ""; $("trainUploadBtn").disabled = false;
+    loadTraining();
+  };
+
+  $("trainTable").querySelector("tbody").addEventListener("click", async (ev) => {
+    const el = ev.target.closest("button, input.train-active");
+    if (!el) return;
+    const row = trainRows[Number(el.dataset.i)];
+    if (!row) return;
+    $("trainErr").textContent = ""; $("trainMsg").textContent = "";
+    if (el.classList.contains("train-preview")) {
+      el.disabled = true;
+      const { data, error } = await sb.storage.from(TRAIN_BUCKET).createSignedUrl(row.storage_path, 3600);
+      el.disabled = false;
+      if (error || !data) { $("trainErr").textContent = "Could not open the file: " + (error ? error.message : "unknown error"); return; }
+      if (row.kind === "pdf") { window.open(data.signedUrl, "_blank", "noopener"); return; }
+      const cell = el.parentElement;
+      cell.innerHTML = '<audio controls autoplay preload="auto" style="max-width:230px"></audio>';
+      cell.querySelector("audio").src = data.signedUrl;
+    } else if (el.classList.contains("train-active")) {
+      const { error } = await sb.rpc("admin_update_training_item", { p_id: row.id, p_title: row.title, p_sort: row.sort_order, p_active: el.checked });
+      if (error) { $("trainErr").textContent = errText(error); el.checked = !el.checked; }
+    } else if (el.classList.contains("train-edit")) {
+      const title = prompt("Title shown to agents:", row.title);
+      if (title === null) return;
+      const sort = prompt("Order (lower shows first):", String(row.sort_order));
+      if (sort === null) return;
+      const { error } = await sb.rpc("admin_update_training_item", { p_id: row.id, p_title: title, p_sort: Number(sort) || 0, p_active: row.active });
+      if (error) { $("trainErr").textContent = errText(error); return; }
+      loadTraining();
+    } else if (el.classList.contains("train-del")) {
+      if (!confirm("Delete \"" + row.title + "\"? Agents will no longer see it. This cannot be undone.")) return;
+      const { data, error } = await sb.rpc("admin_delete_training_item", { p_id: row.id });
+      if (error) { $("trainErr").textContent = errText(error); return; }
+      if (data) await sb.storage.from(TRAIN_BUCKET).remove([data]);
+      loadTraining();
+    }
+  });
 
   // Call recordings (backend/48_call_recordings.sql) — ADMIN ONLY: the card is shown only to
   // admins, and the server refuses every one of these calls for anyone else.
