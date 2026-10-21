@@ -253,7 +253,9 @@
             <th class="num">Switched off</th>
             <th class="num">No answer</th>
             <th class="num hidden" id="talkHead" title="Talk time on calls the Android app could time (1.17.1+). Web-app agents show —.">Talk</th>
+            <th class="num hidden" id="avgTalkHead" title="Average talk time per timed call: total talk time ÷ number of timed calls (a call nobody answered counts as 0s of talk). Web-app agents show —.">Avg talk</th>
             <th class="num hidden" id="ringHead" title="Ring time (dialling until answered or hung up) on timed calls">Ring</th>
+            <th class="num hidden" id="avgRingHead" title="Average ring time per timed call: total ring time ÷ number of timed calls. Web-app agents show —.">Avg ring</th>
             <th class="num hidden" id="dispHead" title="Time from the end of each call to the saved outcome (capped at 30 min per call)">Disposition</th>
             <th class="num hidden" id="naPctHead" title="Share of this agent's calls saved as No Answer">No ans. %</th>
             <th class="num hidden" id="naPeersHead" title="This agent's No Answer rate minus the rate of all other agents in the same period">vs peers</th>
@@ -1519,7 +1521,9 @@
     show($("bankAppsBulkCard"), isAdmin);
     show($("baDeleteHead"), isAdmin);
     show($("talkHead"), isAdmin);
+    show($("avgTalkHead"), isAdmin);
     show($("ringHead"), isAdmin);
+    show($("avgRingHead"), isAdmin);
     show($("dispHead"), isAdmin);
     show($("naPctHead"), isAdmin);
     show($("naPeersHead"), isAdmin);
@@ -1744,9 +1748,14 @@
   // (1.17.1+) are included, so each cell says how many calls it covers.
   function timeCells(t) {
     if (!isAdmin) return "";
-    if (!t || !t.n_calls) return '<td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td>';
+    if (!t || !t.n_calls) return '<td class="num muted">—</td>'.repeat(5);
     const tip = ` title="Covers ${t.n_calls} timed call(s)"`;
-    return `<td class="num"${tip}>${fmtDur(t.talk_secs)}</td><td class="num"${tip}>${fmtDur(t.ring_secs)}</td><td class="num"${tip}>${fmtDur(t.disp_secs)}</td>`;
+    const avgTalk = t.talk_secs / t.n_calls, avgRing = t.ring_secs / t.n_calls;
+    const talkTip = ` title="${fmtDur(t.talk_secs)} talk over ${t.n_calls} timed call(s)"`;
+    const ringTip = ` title="${fmtDur(t.ring_secs)} ring over ${t.n_calls} timed call(s)"`;
+    return `<td class="num"${tip}>${fmtDur(t.talk_secs)}</td><td class="num"${talkTip}>${fmtDur(avgTalk)}</td>` +
+      `<td class="num"${tip}>${fmtDur(t.ring_secs)}</td><td class="num"${ringTip}>${fmtDur(avgRing)}</td>` +
+      `<td class="num"${tip}>${fmtDur(t.disp_secs)}</td>`;
   }
 
   function naCells(s) {
@@ -1800,7 +1809,7 @@
         ${timeCells(callTimes[r.id])}
         ${naCells((naStats || {})[r.id])}
       </tr>`).join("")
-      : `<tr><td colspan="${isAdmin ? 14 : 9}" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
+      : `<tr><td colspan="${isAdmin ? 16 : 9}" class="muted">${Object.keys(rows).length ? "No agents active in this period." : "No agents yet."}</td></tr>`;
   }
 
   function renderCallbacks(rows, names) {
