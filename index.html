@@ -290,10 +290,10 @@
       <p class="muted" style="margin-top:0">
         What agents see when they tap <strong>T</strong> in the Android app: PDFs (calling script,
         card features and benefits) and audio recordings (example calls). Agents can only read
-        and listen. Files up to 50 MB; PDF, MP3, M4A, AAC, WAV or OGG.
+        and listen. Files up to 50 MB; PDF, or audio in MP3, M4A, AAC, WAV, OGG, AMR (phone call recordings), 3GP or FLAC.
       </p>
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px">
-        <input type="file" id="trainFile" accept=".pdf,.mp3,.m4a,.aac,.wav,.ogg,application/pdf,audio/*">
+        <input type="file" id="trainFile" accept=".pdf,.mp3,.m4a,.aac,.wav,.ogg,.opus,.amr,.3gp,.flac,application/pdf,audio/*">
         <input id="trainTitle" placeholder="Title shown to agents" maxlength="120" style="width:240px">
         <label>Order <input id="trainSort" type="number" value="0" style="width:70px"></label>
         <button id="trainUploadBtn" class="primary">Upload</button>
@@ -2936,14 +2936,17 @@
     const file = $("trainFile").files && $("trainFile").files[0];
     if (!file) { $("trainErr").textContent = "Choose a file first."; return; }
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-    const isAudio = file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/i.test(file.name);
+    const isAudio = file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|opus|amr|3gp|flac)$/i.test(file.name);
     if (!isPdf && !isAudio) { $("trainErr").textContent = "Only PDF or audio files can be uploaded."; return; }
     if (file.size > 50 * 1024 * 1024) { $("trainErr").textContent = "That file is over 50 MB."; return; }
     const title = $("trainTitle").value.trim() || file.name.replace(/\.[^.]+$/, "");
     const id = crypto.randomUUID();
     const ext = (file.name.match(/\.([A-Za-z0-9]+)$/) || [, isPdf ? "pdf" : "m4a"])[1].toLowerCase();
     const path = id + "." + ext;
-    const mime = isPdf ? "application/pdf" : (file.type || "audio/mpeg");
+    // Browsers report an empty or odd type for some phone formats (.amr), so the type sent to
+    // Storage comes from the extension, using the types the bucket allows.
+    const AUDIO_MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav", ogg: "audio/ogg", opus: "audio/ogg", amr: "audio/amr", "3gp": "audio/3gpp", flac: "audio/flac" };
+    const mime = isPdf ? "application/pdf" : (AUDIO_MIME[ext] || file.type || "audio/mpeg");
     $("trainUploadBtn").disabled = true; $("trainMsg").textContent = "Uploading…";
     const up = await sb.storage.from(TRAIN_BUCKET).upload(path, file, { contentType: mime });
     if (up.error) { $("trainErr").textContent = "Upload failed: " + up.error.message; $("trainMsg").textContent = ""; $("trainUploadBtn").disabled = false; return; }
