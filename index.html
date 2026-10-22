@@ -339,10 +339,13 @@
         <table id="callRecTable">
           <thead><tr>
             <th>Agent</th>
+            <th title="The agent's phone, as last reported by the app">Phone</th>
             <th>Lead</th>
             <th>Mobile</th>
             <th>Call started</th>
             <th class="num">Length</th>
+            <th title="Which microphone source recorded it. The app tries the next source after a quiet recording.">Mic</th>
+            <th class="num" title="Loudest level the phone reported (0-32767). Red = very quiet, so that phone probably muted the microphone.">Level</th>
             <th>Listen</th>
             <th></th>
           </tr></thead>
@@ -3060,10 +3063,11 @@
 
   function renderCallRecordings() {
     const body = $("callRecTable").querySelector("tbody");
-    if (!callRecRows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No recordings.</td></tr>'; return; }
+    if (!callRecRows.length) { body.innerHTML = '<tr><td colspan="10" class="muted">No recordings.</td></tr>'; return; }
     body.innerHTML = callRecRows.map((r, i) =>
-      "<tr><td>" + esc(r.agent_name || r.login_id) + "</td><td>" + esc(r.lead_id ?? "") + "</td><td>" + esc(r.mobile ?? "") +
-      "</td><td>" + esc(new Date(r.started_at).toLocaleString()) + '</td><td class="num">' + callRecClock(r.duration_ms) + "</td><td>" +
+      "<tr><td>" + esc(r.agent_name || r.login_id) + '</td><td class="muted">' + esc(r.device_model || "—") + "</td><td>" + esc(r.lead_id ?? "") + "</td><td>" + esc(r.mobile ?? "") +
+      "</td><td>" + esc(new Date(r.started_at).toLocaleString()) + '</td><td class="num">' + callRecClock(r.duration_ms) + '</td><td class="muted">' + esc(r.audio_source || "—") + '</td><td class="num">' +
+      (r.peak == null ? '<span class="muted">—</span>' : (r.peak < 60 ? '<span class="err">' + r.peak + "</span>" : String(r.peak))) + "</td><td>" +
       (r.has_audio ? '<button class="secondary callrec-play" data-i="' + i + '">Play</button>' : '<span class="muted">no audio</span>') +
       '</td><td><button class="secondary callrec-del" data-i="' + i + '">Delete</button></td></tr>').join("");
   }
