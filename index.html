@@ -2948,7 +2948,11 @@
     const AUDIO_MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav", ogg: "audio/ogg", opus: "audio/ogg", amr: "audio/amr", "3gp": "audio/3gpp", flac: "audio/flac" };
     const mime = isPdf ? "application/pdf" : (AUDIO_MIME[ext] || file.type || "audio/mpeg");
     $("trainUploadBtn").disabled = true; $("trainMsg").textContent = "Uploading…";
-    const up = await sb.storage.from(TRAIN_BUCKET).upload(path, file, { contentType: mime });
+    // supabase-js sends a File as form data using the File's OWN type (the contentType option
+    // is ignored for files), and an .amr arrives with an empty type — which Storage reads as
+    // application/octet-stream and refuses. So upload a copy that carries the right type.
+    const body = new File([file], file.name, { type: mime });
+    const up = await sb.storage.from(TRAIN_BUCKET).upload(path, body, { contentType: mime });
     if (up.error) { $("trainErr").textContent = "Upload failed: " + up.error.message; $("trainMsg").textContent = ""; $("trainUploadBtn").disabled = false; return; }
     const { error } = await sb.rpc("admin_add_training_item", {
       p_id: id, p_kind: isPdf ? "pdf" : "audio", p_title: title, p_path: path, p_size: file.size, p_sort: Number($("trainSort").value || 0)
